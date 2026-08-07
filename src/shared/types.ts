@@ -11,6 +11,7 @@ export interface OssProfile {
 export interface UploadPreset {
   id: string
   name: string
+  description?: string
   profileId: string
   bucket: string
   prefix: string

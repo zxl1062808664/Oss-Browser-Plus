@@ -7,8 +7,11 @@ import type { AppConfig } from '../../shared/types'
 // The browser preview uses a harmless local adapter; Electron replaces this with the secure preload API.
 if (!window.desktopApi) {
   const demoProfile = { id: 'demo-profile', name: '演示环境', endpoint: 'oss-cn-hangzhou.aliyuncs.com', region: 'oss-cn-hangzhou', accessKeyId: 'preview-only', hasSecret: true, isDefault: true }
-  const demoPreset = { id: 'demo-preset', name: '产品发布包', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/desktop', isDefault: true }
-  let previewConfig: AppConfig = { profiles: [demoProfile], presets: [demoPreset], concurrentUploads: 3, conflictStrategy: 'overwrite' }
+  const backupProfile = { id: 'backup-profile', name: '备份账号', endpoint: 'oss-cn-shanghai.aliyuncs.com', region: 'oss-cn-shanghai', accessKeyId: 'preview-only', hasSecret: true, isDefault: false }
+  const demoPreset = { id: 'demo-preset', name: '产品发布包', description: '桌面客户端正式版本发布', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/desktop', isDefault: true }
+  const testPreset = { id: 'test-preset', name: '测试构建', description: '内测人员下载使用', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/beta', isDefault: false }
+  const backupPreset = { id: 'backup-preset', name: '异地备份', description: '上海节点灾备副本', profileId: backupProfile.id, bucket: 'backup-bucket', prefix: 'archive/desktop', isDefault: false }
+  let previewConfig: AppConfig = { profiles: [demoProfile, backupProfile], presets: [demoPreset, testPreset, backupPreset], concurrentUploads: 3, conflictStrategy: 'overwrite' }
   window.desktopApi = {
     getConfig: async () => previewConfig,
     saveProfile: async (profile) => { previewConfig = { ...previewConfig, profiles: [...previewConfig.profiles.filter((item) => item.id !== profile.id), { ...profile, hasSecret: true }] }; return previewConfig },

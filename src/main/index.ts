@@ -126,7 +126,7 @@ function registerIpc(): void {
 
   ipcMain.handle('config:save-preset', async (_event, input: UploadPreset) => {
     const config = await readConfig()
-    const preset = { ...input, name: input.name.trim(), bucket: input.bucket.trim(), prefix: input.prefix.trim().replace(/^\/+|\/+$/g, '') }
+    const preset = { ...input, name: input.name.trim(), description: input.description?.trim() || '', bucket: input.bucket.trim(), prefix: input.prefix.trim().replace(/^\/+|\/+$/g, '') }
     if (preset.isDefault) config.presets.forEach((item) => { item.isDefault = false })
     const index = config.presets.findIndex((item) => item.id === preset.id)
     if (index >= 0) config.presets[index] = preset
