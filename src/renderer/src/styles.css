@@ -95,7 +95,7 @@ h1, h2, p { margin: 0; }
 .text-button { border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: 12px; }
 .text-button:hover { text-decoration: underline; }
 .task-table { height: 280px; overflow-y: auto; background: #fff; border: 1px solid var(--border); border-radius: 7px; scrollbar-gutter: stable; }
-.task-head, .task-row { display: grid; grid-template-columns: minmax(260px, 2.2fr) 90px minmax(150px, 1fr) 92px 36px; align-items: center; column-gap: 16px; }
+.task-head, .task-row { display: grid; grid-template-columns: minmax(260px, 2.2fr) 90px minmax(150px, 1fr) 92px 70px; align-items: center; column-gap: 16px; }
 .task-head { position: sticky; top: 0; z-index: 2; min-height: 39px; padding: 0 14px; color: #727f8e; background: #f7f9fb; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; }
 .task-row { position: relative; min-height: 63px; padding: 8px 14px; border-bottom: 1px solid #e8ecf0; color: #596777; font-size: 12px; }
 .task-row:last-child { border-bottom: 0; }
@@ -114,6 +114,9 @@ h1, h2, p { margin: 0; }
 .task-status.failed { color: var(--red); }
 .task-status.skipped { color: #8a6b19; }
 .task-status.cancelled { color: #7a8490; }
+.task-actions { min-width: 70px; display: flex; justify-content: flex-end; gap: 5px; }
+.task-actions .retry { color: var(--blue); }
+.task-actions .retry:hover { color: var(--blue-dark); border-color: #a9c7ed; background: #f2f7fe; }
 .task-error { grid-column: 1 / -1; padding: 5px 8px; margin: 4px 0; color: #9e3434; background: #fff2f2; border-radius: 4px; font-size: 10px; }
 .queue-empty { height: 239px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #7f8a98; }
 .queue-empty svg { color: #aab3bd; }
@@ -210,5 +213,5 @@ h1, h2, p { margin: 0; }
   .content { padding-inline: 24px; }
   .target-band { grid-template-columns: minmax(145px, .8fr) minmax(165px, 1fr) minmax(245px, 1.4fr); gap: 12px; }
   .target-summary-title span { display: none; }
-  .task-head, .task-row { grid-template-columns: minmax(220px, 2fr) 76px minmax(120px, 1fr) 80px 32px; column-gap: 10px; }
+  .task-head, .task-row { grid-template-columns: minmax(220px, 2fr) 76px minmax(120px, 1fr) 80px 70px; column-gap: 10px; }
 }

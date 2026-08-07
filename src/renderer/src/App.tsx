@@ -76,9 +76,9 @@ function App() {
   const selectFiles = async () => addItems(await window.desktopApi.selectFiles())
   const selectFolder = async () => addItems(await window.desktopApi.selectFolder())
 
-  const startUpload = async () => {
+  const startUpload = async (onlyTaskId?: string) => {
     if (!selectedTargets.length) return notify('请至少选择一个上传目标')
-    const pending = tasks.filter((task) => task.status === 'waiting' || task.status === 'failed')
+    const pending = tasks.filter((task) => (task.status === 'waiting' || task.status === 'failed') && (!onlyTaskId || task.id === onlyTaskId))
     if (!pending.length) return notify('没有待上传文件')
     const operations = pending.flatMap((task): UploadTask[] => task.targetPresetId
       ? [task]
@@ -204,6 +204,7 @@ function App() {
             onProfileChange={selectProfile} onPresetChange={changePrimaryTarget} onTargetsChange={setSelectedTargetIds} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
             onUpload={startUpload} onSettings={() => setPage('settings')}
             onRemove={(id) => setTasks((current) => current.filter((item) => item.id !== id))}
+            onRetry={(id) => startUpload(id)}
             onClear={() => setTasks((current) => current.filter((item) => !['success', 'skipped'].includes(item.status)))}
             onCancelAll={cancelAll}
           />
@@ -222,7 +223,7 @@ interface UploadPageProps {
   selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
-  onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onClear: () => void; onCancelAll: () => void
+  onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
 }
 
 function UploadPage(props: UploadPageProps) {
@@ -262,7 +263,7 @@ function UploadPage(props: UploadPageProps) {
           <button className="secondary" onClick={props.onFiles}><FileUp size={18} />选择文件</button>
           <button className="secondary" onClick={props.onFolder}><FolderOpen size={18} />选择文件夹</button>
         </div>
-        <button className="primary upload-button" disabled={props.busy || !tasks.some((task) => task.status === 'waiting' || task.status === 'failed')} onClick={props.onUpload}>
+        <button className="primary upload-button" disabled={props.busy || !tasks.some((task) => task.status === 'waiting' || task.status === 'failed')} onClick={() => props.onUpload()}>
           {props.busy ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}{props.busy ? '正在上传' : '开始上传'}
         </button>
       </section>
@@ -277,7 +278,7 @@ function UploadPage(props: UploadPageProps) {
         <div className="section-heading"><div><h2>上传队列</h2><span>{tasks.filter((task) => task.status === 'waiting').length} 项等待</span></div><div className="queue-actions"><button className="secondary compact" disabled={!tasks.some((task) => task.status === 'waiting' || task.status === 'uploading')} onClick={props.onCancelAll}><CircleStop size={15} />取消所有任务</button><button className="secondary compact" disabled={!props.completed} onClick={props.onClear}><Trash2 size={15} />清空已完成</button></div></div>
         <div className="task-table">
           <div className="task-head"><span>文件</span><span>大小</span><span>进度</span><span>状态</span><span /></div>
-          {!tasks.length ? <div className="queue-empty"><HardDriveUpload size={28} /><span>上传队列为空</span><small>选择文件或文件夹以添加任务</small></div> : tasks.map((task) => <TaskRow key={task.id} task={task} onRemove={() => props.onRemove(task.id)} />)}
+          {!tasks.length ? <div className="queue-empty"><HardDriveUpload size={28} /><span>上传队列为空</span><small>选择文件或文件夹以添加任务</small></div> : tasks.map((task) => <TaskRow key={task.id} task={task} busy={props.busy} onRetry={() => props.onRetry(task.id)} onRemove={() => props.onRemove(task.id)} />)}
         </div>
       </section>
     </>}
@@ -290,14 +291,14 @@ function UploadPage(props: UploadPageProps) {
   </>
 }
 
-function TaskRow({ task, onRemove }: { task: UploadTask; onRemove: () => void }) {
+function TaskRow({ task, busy, onRetry, onRemove }: { task: UploadTask; busy: boolean; onRetry: () => void; onRemove: () => void }) {
   const labels: Record<TaskStatus, string> = { waiting: '等待中', uploading: '上传中', success: '已完成', failed: '失败', skipped: '已跳过', cancelled: '已取消' }
   return <div className="task-row">
     <div className="file-cell"><span className="file-icon"><FileUp size={17} /></span><div><strong title={task.relativePath}>{task.relativePath}</strong><small title={task.objectName}>{task.objectName || '等待分配目标路径'}</small></div></div>
     <span>{formatBytes(task.size)}</span>
     <div className="row-progress"><div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div><span>{task.progress}%</span></div>
     <span className={`task-status ${task.status}`}>{task.status === 'uploading' && <LoaderCircle className="spin" size={14} />}{labels[task.status]}</span>
-    <button className="icon-button small" title="移除任务" disabled={task.status === 'uploading'} onClick={onRemove}><X size={16} /></button>
+    <div className="task-actions">{task.status === 'failed' && <button className="icon-button small retry" title="重试此任务" disabled={busy} onClick={onRetry}><RefreshCw size={15} /></button>}<button className="icon-button small" title="移除任务" disabled={task.status === 'uploading'} onClick={onRemove}><X size={16} /></button></div>
     {task.error && <div className="task-error">{task.error}</div>}
   </div>
 }

@@ -12,6 +12,7 @@ if (!window.desktopApi) {
   const testPreset = { id: 'test-preset', name: '测试构建', description: '内测人员下载使用', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/beta', isDefault: false }
   const backupPreset = { id: 'backup-preset', name: '异地备份', description: '上海节点灾备副本', profileId: backupProfile.id, bucket: 'backup-bucket', prefix: 'archive/desktop', isDefault: false }
   let previewConfig: AppConfig = { profiles: [demoProfile, backupProfile], presets: [demoPreset, testPreset, backupPreset], concurrentUploads: 3, conflictStrategy: 'overwrite' }
+  let previewFailureInjected = false
   window.desktopApi = {
     getConfig: async () => previewConfig,
     saveProfile: async (profile) => { previewConfig = { ...previewConfig, profiles: [...previewConfig.profiles.filter((item) => item.id !== profile.id), { ...profile, hasSecret: true }] }; return previewConfig },
@@ -21,7 +22,7 @@ if (!window.desktopApi) {
     savePreferences: async (input) => { previewConfig = { ...previewConfig, ...input }; return previewConfig },
     testConnection: async () => ({ ok: true, message: '演示模式：连接测试通过' }),
     selectFiles: async () => Array.from({ length: 12 }, (_, index) => ({ id: crypto.randomUUID(), absolutePath: `C:/preview/package-${index + 1}.zip`, relativePath: `release/package-${index + 1}.zip`, name: `package-${index + 1}.zip`, size: (index + 1) * 1024 * 1024 })),
-    selectFolder: async () => [], upload: async () => ({}), cancelAllUploads: async () => ({ cancelled: 0 }), copyText: async () => {}, onUploadProgress: () => () => {}
+    selectFolder: async () => [], upload: async () => { if (!previewFailureInjected) { previewFailureInjected = true; throw new Error('演示模式：模拟网络中断') } return {} }, cancelAllUploads: async () => ({ cancelled: 0 }), copyText: async () => {}, onUploadProgress: () => () => {}
   }
 }
 
