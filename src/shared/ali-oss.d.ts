@@ -17,6 +17,7 @@ declare module 'ali-oss' {
     listBuckets(options?: Record<string, unknown>): Promise<unknown>
     head(objectName: string): Promise<unknown>
     multipartUpload(objectName: string, filePath: string, options?: MultipartOptions): Promise<unknown>
+    cancel(): void
   }
   const OSS: { new (options: ClientOptions): OSSClient }
   export default OSS

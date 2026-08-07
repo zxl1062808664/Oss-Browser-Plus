@@ -27,8 +27,8 @@ if not exist "package.json" (
   goto :failed
 )
 
-echo [1/3] Installing locked dependencies...
-call npm ci --no-audit --no-fund
+echo [1/3] Checking project dependencies...
+call npm install --no-audit --no-fund
 if errorlevel 1 goto :failed
 
 echo.

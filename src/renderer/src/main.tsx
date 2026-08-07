@@ -17,7 +17,8 @@ if (!window.desktopApi) {
     deletePreset: async (id) => { previewConfig = { ...previewConfig, presets: previewConfig.presets.filter((item) => item.id !== id) }; return previewConfig },
     savePreferences: async (input) => { previewConfig = { ...previewConfig, ...input }; return previewConfig },
     testConnection: async () => ({ ok: true, message: '演示模式：连接测试通过' }),
-    selectFiles: async () => [], selectFolder: async () => [], upload: async () => ({}), copyText: async () => {}, onUploadProgress: () => () => {}
+    selectFiles: async () => Array.from({ length: 12 }, (_, index) => ({ id: crypto.randomUUID(), absolutePath: `C:/preview/package-${index + 1}.zip`, relativePath: `release/package-${index + 1}.zip`, name: `package-${index + 1}.zip`, size: (index + 1) * 1024 * 1024 })),
+    selectFolder: async () => [], upload: async () => ({}), cancelAllUploads: async () => ({ cancelled: 0 }), copyText: async () => {}, onUploadProgress: () => () => {}
   }
 }
 

@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Check, ChevronDown, Clipboard, Cloud, FileUp, FolderOpen, Gauge, HardDriveUpload,
+  Check, ChevronDown, CircleStop, Clipboard, Cloud, FileUp, FolderOpen, Gauge, HardDriveUpload,
   ListChecks, LoaderCircle, Pencil, Plus, RefreshCw, Settings, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, LocalUploadItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
 
 type Page = 'upload' | 'settings'
-type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped'
+type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
 type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string }
 type LogEntry = { id: string; time: string; level: 'info' | 'success' | 'error'; message: string }
 
@@ -25,14 +25,17 @@ const fullPath = (preset?: UploadPreset) => preset ? `oss://${preset.bucket}/${n
 function App() {
   const [page, setPage] = useState<Page>('upload')
   const [config, setConfig] = useState<AppConfig>(emptyConfig)
+  const [selectedProfileId, setSelectedProfileId] = useState('')
   const [selectedPresetId, setSelectedPresetId] = useState('')
   const [tasks, setTasks] = useState<UploadTask[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState('')
+  const cancelRequested = useRef(false)
 
-  const selectedPreset = config.presets.find((item) => item.id === selectedPresetId)
-  const selectedProfile = config.profiles.find((item) => item.id === selectedPreset?.profileId)
+  const selectedProfile = config.profiles.find((item) => item.id === selectedProfileId)
+  const availablePresets = useMemo(() => config.presets.filter((item) => item.profileId === selectedProfileId), [config.presets, selectedProfileId])
+  const selectedPreset = availablePresets.find((item) => item.id === selectedPresetId)
   const completed = tasks.filter((task) => ['success', 'skipped'].includes(task.status)).length
   const failed = tasks.filter((task) => task.status === 'failed').length
   const totalSize = tasks.reduce((sum, task) => sum + task.size, 0)
@@ -41,7 +44,10 @@ function App() {
   useEffect(() => {
     window.desktopApi.getConfig().then((next) => {
       setConfig(next)
-      setSelectedPresetId(next.presets.find((item) => item.isDefault)?.id || next.presets[0]?.id || '')
+      const profileId = next.profiles.find((item) => item.isDefault)?.id || next.profiles[0]?.id || ''
+      const profilePresets = next.presets.filter((item) => item.profileId === profileId)
+      setSelectedProfileId(profileId)
+      setSelectedPresetId(profilePresets.find((item) => item.isDefault)?.id || profilePresets[0]?.id || '')
     })
     return window.desktopApi.onUploadProgress((event) => {
       setTasks((current) => current.map((task) => task.id === event.taskId ? { ...task, progress: event.percent } : task))
@@ -70,11 +76,12 @@ function App() {
     if (!selectedPreset || !selectedProfile) return notify('请先配置并选择上传路径')
     const pending = tasks.filter((task) => task.status === 'waiting' || task.status === 'failed')
     if (!pending.length) return notify('没有待上传文件')
+    cancelRequested.current = false
     setBusy(true)
     addLog('info', `开始上传 ${pending.length} 个文件到 ${fullPath(selectedPreset)}`)
     let cursor = 0
     const worker = async () => {
-      while (cursor < pending.length) {
+      while (cursor < pending.length && !cancelRequested.current) {
         const task = pending[cursor++]
         const objectName = [normalizePrefix(selectedPreset.prefix), task.relativePath].filter(Boolean).join('/')
         setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, error: undefined, objectName } : item))
@@ -92,8 +99,12 @@ function App() {
           addLog('success', `${result.skipped ? '已跳过' : '上传成功'}：${objectName}`)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: message } : item))
-          addLog('error', `上传失败：${objectName} · ${message}`)
+          if (cancelRequested.current) {
+            setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'cancelled', error: undefined } : item))
+          } else {
+            setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: message } : item))
+            addLog('error', `上传失败：${objectName} · ${message}`)
+          }
         }
       }
     }
@@ -101,10 +112,38 @@ function App() {
     setBusy(false)
   }
 
+  const cancelAll = async () => {
+    const cancellable = tasks.filter((task) => task.status === 'waiting' || task.status === 'uploading')
+    if (!cancellable.length) return notify('没有可取消的任务')
+    cancelRequested.current = true
+    const result = await window.desktopApi.cancelAllUploads()
+    setTasks((current) => current.map((task) => task.status === 'waiting' || task.status === 'uploading' ? { ...task, status: 'cancelled', error: undefined } : task))
+    addLog('info', `已取消全部任务：${cancellable.length} 项${result.cancelled ? `，其中 ${result.cancelled} 项正在上传` : ''}`)
+    notify('所有待处理任务已取消')
+  }
+
   const copyPath = async () => {
     if (!selectedPreset) return
     await window.desktopApi.copyText(fullPath(selectedPreset))
     notify('OSS 路径已复制')
+  }
+
+  const selectProfile = (profileId: string) => {
+    const profilePresets = config.presets.filter((item) => item.profileId === profileId)
+    setSelectedProfileId(profileId)
+    setSelectedPresetId(profilePresets.find((item) => item.isDefault)?.id || profilePresets[0]?.id || '')
+  }
+
+  const applyConfig = (next: AppConfig) => {
+    setConfig(next)
+    const profileId = next.profiles.some((item) => item.id === selectedProfileId)
+      ? selectedProfileId
+      : next.profiles.find((item) => item.isDefault)?.id || next.profiles[0]?.id || ''
+    const profilePresets = next.presets.filter((item) => item.profileId === profileId)
+    setSelectedProfileId(profileId)
+    if (!profilePresets.some((item) => item.id === selectedPresetId)) {
+      setSelectedPresetId(profilePresets.find((item) => item.isDefault)?.id || profilePresets[0]?.id || '')
+    }
   }
 
   return (
@@ -121,16 +160,18 @@ function App() {
       <main className="content">
         {page === 'upload' ? (
           <UploadPage
-            config={config} tasks={tasks} logs={logs} selectedPresetId={selectedPresetId}
+            config={config} tasks={tasks} logs={logs} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
+            availablePresets={availablePresets}
             selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy}
             completed={completed} failed={failed} totalSize={totalSize} totalProgress={totalProgress}
-            onPresetChange={setSelectedPresetId} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
+            onProfileChange={selectProfile} onPresetChange={setSelectedPresetId} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
             onUpload={startUpload} onSettings={() => setPage('settings')}
             onRemove={(id) => setTasks((current) => current.filter((item) => item.id !== id))}
             onClear={() => setTasks((current) => current.filter((item) => !['success', 'skipped'].includes(item.status)))}
+            onCancelAll={cancelAll}
           />
         ) : (
-          <SettingsPage config={config} onChange={(next) => { setConfig(next); if (!next.presets.some((item) => item.id === selectedPresetId)) setSelectedPresetId(next.presets.find((item) => item.isDefault)?.id || next.presets[0]?.id || '') }} />
+          <SettingsPage config={config} onChange={applyConfig} />
         )}
       </main>
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
@@ -139,11 +180,12 @@ function App() {
 }
 
 interface UploadPageProps {
-  config: AppConfig; tasks: UploadTask[]; logs: LogEntry[]; selectedPresetId: string
+  config: AppConfig; tasks: UploadTask[]; logs: LogEntry[]; selectedProfileId: string; selectedPresetId: string
+  availablePresets: UploadPreset[]
   selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean
   completed: number; failed: number; totalSize: number; totalProgress: number
-  onPresetChange: (id: string) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
-  onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onClear: () => void
+  onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
+  onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onClear: () => void; onCancelAll: () => void
 }
 
 function UploadPage(props: UploadPageProps) {
@@ -154,18 +196,21 @@ function UploadPage(props: UploadPageProps) {
       <button className="icon-button" title="打开设置" onClick={props.onSettings}><Settings size={19} /></button>
     </header>
 
-    {!config.presets.length ? <div className="empty-setup">
+    {!config.profiles.length ? <div className="empty-setup">
       <span className="empty-icon"><Cloud size={30} /></span>
       <h2>先添加一个上传路径</h2><p>配置 OSS 凭据和常用目录后，就可以在这里一键上传。</p>
       <button className="primary" onClick={props.onSettings}><Settings size={17} />前往设置</button>
     </div> : <>
       <section className="target-band">
         <div className="target-selector">
-          <label htmlFor="target">上传到</label>
-          <div className="select-wrap"><select id="target" value={props.selectedPresetId} onChange={(event) => props.onPresetChange(event.target.value)}>{config.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><ChevronDown size={16} /></div>
+          <label htmlFor="profile-target">OSS 账号</label>
+          <div className="select-wrap"><select id="profile-target" disabled={props.busy} value={props.selectedProfileId} onChange={(event) => props.onProfileChange(event.target.value)}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><ChevronDown size={16} /></div>
         </div>
-        <div className="path-preview"><span>{fullPath(selectedPreset)}</span><button className="icon-button small" title="复制 OSS 路径" onClick={props.onCopy}><Clipboard size={17} /></button></div>
-        <div className="connection"><span className="status-dot online" />{selectedProfile?.name}</div>
+        <div className="target-selector">
+          <label htmlFor="path-target">上传路径</label>
+          <div className="select-wrap"><select id="path-target" disabled={props.busy || !props.availablePresets.length} value={props.selectedPresetId} onChange={(event) => props.onPresetChange(event.target.value)}>{props.availablePresets.length ? props.availablePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>) : <option value="">该账号暂无上传路径</option>}</select><ChevronDown size={16} /></div>
+        </div>
+        <div className="path-field"><label>路径预览</label><div className={`path-preview ${selectedPreset ? '' : 'empty'}`}><span>{selectedPreset ? fullPath(selectedPreset) : '请前往设置为该账号添加路径'}</span><button className="icon-button small" disabled={!selectedPreset} title="复制 OSS 路径" onClick={props.onCopy}><Clipboard size={17} /></button></div></div>
       </section>
 
       <section className="actions-row">
@@ -185,7 +230,7 @@ function UploadPage(props: UploadPageProps) {
       </section>
 
       <section className="task-section">
-        <div className="section-heading"><div><h2>上传队列</h2><span>{tasks.filter((task) => task.status === 'waiting').length} 项等待</span></div>{props.completed > 0 && <button className="text-button" onClick={props.onClear}>清除已完成</button>}</div>
+        <div className="section-heading"><div><h2>上传队列</h2><span>{tasks.filter((task) => task.status === 'waiting').length} 项等待</span></div><div className="queue-actions"><button className="secondary compact" disabled={!tasks.some((task) => task.status === 'waiting' || task.status === 'uploading')} onClick={props.onCancelAll}><CircleStop size={15} />取消所有任务</button><button className="secondary compact" disabled={!props.completed} onClick={props.onClear}><Trash2 size={15} />清空已完成</button></div></div>
         <div className="task-table">
           <div className="task-head"><span>文件</span><span>大小</span><span>进度</span><span>状态</span><span /></div>
           {!tasks.length ? <div className="queue-empty"><HardDriveUpload size={28} /><span>上传队列为空</span><small>选择文件或文件夹以添加任务</small></div> : tasks.map((task) => <TaskRow key={task.id} task={task} onRemove={() => props.onRemove(task.id)} />)}
@@ -201,7 +246,7 @@ function UploadPage(props: UploadPageProps) {
 }
 
 function TaskRow({ task, onRemove }: { task: UploadTask; onRemove: () => void }) {
-  const labels: Record<TaskStatus, string> = { waiting: '等待中', uploading: '上传中', success: '已完成', failed: '失败', skipped: '已跳过' }
+  const labels: Record<TaskStatus, string> = { waiting: '等待中', uploading: '上传中', success: '已完成', failed: '失败', skipped: '已跳过', cancelled: '已取消' }
   return <div className="task-row">
     <div className="file-cell"><span className="file-icon"><FileUp size={17} /></span><div><strong title={task.relativePath}>{task.relativePath}</strong><small title={task.objectName}>{task.objectName || '等待分配目标路径'}</small></div></div>
     <span>{formatBytes(task.size)}</span>

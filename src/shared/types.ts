@@ -64,6 +64,7 @@ export interface DesktopApi {
   selectFiles: () => Promise<LocalUploadItem[]>
   selectFolder: () => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
+  cancelAllUploads: () => Promise<{ cancelled: number }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
 }

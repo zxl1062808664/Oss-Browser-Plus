@@ -23,6 +23,8 @@ const defaultConfig: StoredConfig = {
   conflictStrategy: 'overwrite'
 }
 
+const activeUploadClients = new Map<string, InstanceType<typeof OSS>>()
+
 const configPath = () => path.join(app.getPath('userData'), 'config.json')
 
 async function readConfig(): Promise<StoredConfig> {
@@ -184,29 +186,40 @@ function registerIpc(): void {
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
     const client = createClient(profile, request.bucket)
-    if (request.conflictStrategy === 'skip') {
-      try {
-        await client.head(request.objectName)
-        return { skipped: true }
-      } catch (error) {
-        const status = (error as { status?: number }).status
-        if (status !== 404) throw error
+    activeUploadClients.set(request.taskId, client)
+    try {
+      if (request.conflictStrategy === 'skip') {
+        try {
+          await client.head(request.objectName)
+          return { skipped: true }
+        } catch (error) {
+          const status = (error as { status?: number }).status
+          if (status !== 404) throw error
+        }
       }
+      await client.multipartUpload(request.objectName, request.absolutePath, {
+        parallel: 4,
+        partSize: 1024 * 1024,
+        progress: async (percentage: number) => {
+          const stat = await fs.stat(request.absolutePath)
+          event.sender.send('oss:upload-progress', {
+            taskId: request.taskId,
+            percent: Math.round(percentage * 100),
+            loaded: Math.round(stat.size * percentage),
+            total: stat.size
+          })
+        }
+      })
+      return {}
+    } finally {
+      activeUploadClients.delete(request.taskId)
     }
-    await client.multipartUpload(request.objectName, request.absolutePath, {
-      parallel: 4,
-      partSize: 1024 * 1024,
-      progress: async (percentage: number) => {
-        const stat = await fs.stat(request.absolutePath)
-        event.sender.send('oss:upload-progress', {
-          taskId: request.taskId,
-          percent: Math.round(percentage * 100),
-          loaded: Math.round(stat.size * percentage),
-          total: stat.size
-        })
-      }
-    })
-    return {}
+  })
+
+  ipcMain.handle('oss:cancel-all', () => {
+    const cancelled = activeUploadClients.size
+    activeUploadClients.forEach((client) => client.cancel())
+    return { cancelled }
   })
 }
 

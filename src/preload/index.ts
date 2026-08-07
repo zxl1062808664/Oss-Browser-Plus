@@ -12,6 +12,7 @@ const api: DesktopApi = {
   selectFiles: () => ipcRenderer.invoke('files:select'),
   selectFolder: () => ipcRenderer.invoke('folder:select'),
   upload: (request) => ipcRenderer.invoke('oss:upload', request),
+  cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   onUploadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)
