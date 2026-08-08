@@ -1,9 +1,11 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } from 'electron'
 import { promises as fs } from 'node:fs'
+import { createWriteStream } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, LocalUploadItem, ProfileInput, UploadPreset, UploadRequest } from '../shared/types'
+import type { AppConfig, DownloadObjectsRequest, ListObjectsRequest, LocalUploadItem, ProfileInput, UploadPreset, UploadRequest } from '../shared/types'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -61,12 +63,12 @@ function decryptSecret(profile: StoredProfile): string {
   return safeStorage.decryptString(Buffer.from(profile.encryptedSecret, 'base64'))
 }
 
-function createClient(profile: StoredProfile, bucket?: string, secretOverride?: string): InstanceType<typeof OSS> {
+function createClient(profile: StoredProfile, bucket?: string, secretOverride?: string, regionOverride?: string): InstanceType<typeof OSS> {
   return new OSS({
     accessKeyId: profile.accessKeyId,
     accessKeySecret: secretOverride || decryptSecret(profile),
-    region: profile.region || undefined,
-    endpoint: profile.endpoint || undefined,
+    region: regionOverride || profile.region || undefined,
+    endpoint: regionOverride ? undefined : profile.endpoint || undefined,
     bucket,
     secure: true,
     timeout: 120000
@@ -180,6 +182,64 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('clipboard:write', (_event, value: string) => clipboard.writeText(value))
+
+  ipcMain.handle('oss:list-objects', async (_event, request: ListObjectsRequest) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const prefix = request.prefix ? `${request.prefix.replace(/^\/+|\/+$/g, '')}/` : ''
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    const result = await client.list({ prefix, delimiter: '/', 'max-keys': 1000 })
+    const folders = (result.prefixes || []).map((key) => ({
+      key,
+      name: key.slice(prefix.length).replace(/\/$/, ''),
+      size: 0,
+      isFolder: true
+    }))
+    const objects = (result.objects || [])
+      .filter((object) => object.name !== prefix)
+      .map((object) => ({
+        key: object.name,
+        name: object.name.slice(prefix.length),
+        size: object.size || 0,
+        lastModified: object.lastModified ? new Date(object.lastModified).toISOString() : undefined,
+        isFolder: false
+      }))
+    return [...folders, ...objects].sort((a, b) => Number(b.isFolder) - Number(a.isFolder) || a.name.localeCompare(b.name))
+  })
+
+  ipcMain.handle('oss:list-buckets', async (_event, profileId: string) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const result = await createClient(profile).listBuckets({ 'max-keys': 1000 })
+    return (result.buckets || []).map((bucket) => ({
+      name: bucket.name,
+      region: bucket.region,
+      creationDate: bucket.creationDate ? new Date(bucket.creationDate).toISOString() : undefined
+    })).sort((a, b) => a.name.localeCompare(b.name))
+  })
+
+  ipcMain.handle('oss:download-objects', async (_event, request: DownloadObjectsRequest) => {
+    const result = await dialog.showOpenDialog({ title: '选择下载目录', properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return { cancelled: true as const }
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    const basePrefix = request.prefix ? `${request.prefix.replace(/^\/+|\/+$/g, '')}/` : ''
+    const directory = result.filePaths[0]
+    for (const key of request.keys) {
+      const relative = (key.startsWith(basePrefix) ? key.slice(basePrefix.length) : path.basename(key))
+        .split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
+      const destination = path.join(directory, relative)
+      await fs.mkdir(path.dirname(destination), { recursive: true })
+      const response = await client.getStream(key)
+      if (!response.stream) throw new Error(`无法读取对象：${key}`)
+      await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
+    }
+    return { directory, count: request.keys.length }
+  })
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {
     const config = await readConfig()

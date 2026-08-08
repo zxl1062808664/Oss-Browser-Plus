@@ -13,6 +13,9 @@ const api: DesktopApi = {
   selectFolder: () => ipcRenderer.invoke('folder:select'),
   upload: (request) => ipcRenderer.invoke('oss:upload', request),
   cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
+  listObjects: (request) => ipcRenderer.invoke('oss:list-objects', request),
+  listBuckets: (profileId) => ipcRenderer.invoke('oss:list-buckets', profileId),
+  downloadObjects: (request) => ipcRenderer.invoke('oss:download-objects', request),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   onUploadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)

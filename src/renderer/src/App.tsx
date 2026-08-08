@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Check, ChevronDown, CircleStop, Clipboard, Cloud, FileUp, FolderOpen, Gauge, HardDriveUpload,
+  ArrowUp, Check, ChevronDown, CircleStop, Clipboard, Cloud, Download, FileUp, FileText, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
   ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, Settings, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, LocalUploadItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
+import type { AppConfig, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
 
-type Page = 'upload' | 'settings'
+type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
 type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string; targetPresetId?: string }
 type LogEntry = { id: string; time: string; level: 'info' | 'success' | 'error'; message: string }
@@ -189,6 +189,7 @@ function App() {
         <div className="brand"><span className="brand-mark"><Cloud size={22} /></span><span>OSS Quick</span></div>
         <nav>
           <button className={page === 'upload' ? 'active' : ''} onClick={() => setPage('upload')}><HardDriveUpload size={19} />上传中心</button>
+          <button className={page === 'browse' ? 'active' : ''} onClick={() => setPage('browse')}><FolderSearch size={19} />OSS 文件</button>
           <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}><Settings size={19} />设置</button>
         </nav>
         <div className="sidebar-status"><span className={config.profiles.length ? 'status-dot online' : 'status-dot'} />{config.profiles.length ? `${config.profiles.length} 个 OSS 连接` : '尚未配置 OSS'}</div>
@@ -208,6 +209,8 @@ function App() {
             onClear={() => setTasks((current) => current.filter((item) => !['success', 'skipped'].includes(item.status)))}
             onCancelAll={cancelAll}
           />
+        ) : page === 'browse' ? (
+          <BrowsePage config={config} initialProfileId={selectedProfileId} initialPresetId={selectedPresetId} />
         ) : (
           <SettingsPage config={config} onChange={applyConfig} />
         )}
@@ -215,6 +218,119 @@ function App() {
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
     </div>
   )
+}
+
+function BrowsePage({ config, initialProfileId, initialPresetId }: { config: AppConfig; initialProfileId: string; initialPresetId: string }) {
+  const [mode, setMode] = useState<'account' | 'preset'>('preset')
+  const [profileId, setProfileId] = useState(initialProfileId)
+  const [presetId, setPresetId] = useState(initialPresetId)
+  const [selectedBucket, setSelectedBucket] = useState('')
+  const [buckets, setBuckets] = useState<OssBucketItem[]>([])
+  const [currentPrefix, setCurrentPrefix] = useState('')
+  const [objects, setObjects] = useState<OssObjectItem[]>([])
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const profile = config.profiles.find((item) => item.id === profileId)
+  const presets = config.presets.filter((item) => item.profileId === profileId)
+  const preset = config.presets.find((item) => item.id === presetId && item.profileId === profileId)
+  const rootPrefix = mode === 'preset' ? normalizePrefix(preset?.prefix || '') : ''
+  const bucketName = mode === 'account' ? selectedBucket : preset?.bucket || ''
+  const bucketRegion = mode === 'account' ? buckets.find((item) => item.name === selectedBucket)?.region : undefined
+  const atBucketList = mode === 'account' && !selectedBucket
+  const files = objects.filter((item) => !item.isFolder)
+
+  useEffect(() => {
+    if (!profileId && config.profiles.length) setProfileId(config.profiles.find((item) => item.isDefault)?.id || config.profiles[0].id)
+  }, [config.profiles, profileId])
+
+  useEffect(() => {
+    const nextPresets = config.presets.filter((item) => item.profileId === profileId)
+    if (!nextPresets.some((item) => item.id === presetId)) setPresetId(nextPresets.find((item) => item.isDefault)?.id || nextPresets[0]?.id || '')
+  }, [config.presets, profileId, presetId])
+
+  useEffect(() => {
+    if (mode === 'account') {
+      setSelectedBucket('')
+      setCurrentPrefix('')
+    }
+    setSelectedKeys([])
+    setNotice('')
+  }, [mode, profileId])
+
+  useEffect(() => {
+    setCurrentPrefix(rootPrefix)
+    setSelectedKeys([])
+  }, [rootPrefix, presetId])
+
+  useEffect(() => {
+    if (!profile || (mode === 'preset' && !preset)) {
+      setObjects([])
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    const request = atBucketList
+      ? window.desktopApi.listBuckets(profile.id).then((items) => { if (!cancelled) { setBuckets(items); setObjects([]) } })
+      : window.desktopApi.listObjects({ profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion }).then((items) => { if (!cancelled) setObjects(items) })
+    request
+      .catch((error) => { if (!cancelled) setNotice(error instanceof Error ? error.message : '读取 OSS 目录失败') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [atBucketList, bucketName, bucketRegion, currentPrefix, mode, preset, profile, refreshKey])
+
+  const copyBrowsePath = async () => {
+    if (!bucketName) return
+    const value = `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`
+    await window.desktopApi.copyText(value)
+    setNotice('当前 OSS 路径已复制')
+  }
+
+  const downloadSelected = async () => {
+    if (!profile || !bucketName || !selectedKeys.length) return
+    setDownloading(true)
+    setNotice('正在准备下载...')
+    try {
+      const result = await window.desktopApi.downloadObjects({ profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion, keys: selectedKeys })
+      if ('cancelled' in result) setNotice('已取消选择下载目录')
+      else setNotice(`已下载 ${result.count} 个文件到 ${result.directory}`)
+      setSelectedKeys([])
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '下载失败')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const toggleFile = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...current, key] : current.filter((item) => item !== key))
+  const selectAll = (checked: boolean) => setSelectedKeys(checked ? files.map((item) => item.key) : [])
+  const goUp = () => {
+    if (mode === 'account' && selectedBucket && !currentPrefix) {
+      setSelectedBucket('')
+      setSelectedKeys([])
+      return
+    }
+    if (currentPrefix === rootPrefix) return
+    const parent = currentPrefix.split('/').slice(0, -1).join('/')
+    setCurrentPrefix(parent.length >= rootPrefix.length ? parent : rootPrefix)
+  }
+
+  return <>
+    <header className="page-header"><div><h1>OSS 文件</h1><p>查看整个账号或限定在预设路径下，并下载到本地</p></div><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
+    <div className="browse-mode"><span>查看范围</span><div className="segmented"><button className={mode === 'account' ? 'active' : ''} onClick={() => setMode('account')}>整个账号</button><button className={mode === 'preset' ? 'active' : ''} onClick={() => setMode('preset')}>预设路径</button></div></div>
+    {!config.profiles.length ? <div className="empty-setup"><span className="empty-icon"><Cloud size={30} /></span><h2>先配置 OSS 账号</h2><p>配置账号后即可查看 OSS 文件。</p></div> : mode === 'preset' && !preset ? <div className="empty-setup"><span className="empty-icon"><FolderSearch size={30} /></span><h2>暂无可查看路径</h2><p>请在设置中添加一个常用路径，或切换到整个账号模式。</p></div> : <>
+      <section className="browse-toolbar">
+        <div className="browse-field"><label htmlFor="browse-profile">OSS 账号</label><div className="select-wrap"><select id="browse-profile" value={profileId} onChange={(event) => setProfileId(event.target.value)}>{config.profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></div>
+        {mode === 'preset' ? <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>)}</select><ChevronDown size={16} /></div></div> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
+        <div className="browse-path"><span>{atBucketList ? 'oss://' : `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`}</span><button className="icon-button small" disabled={atBucketList} title="复制当前路径" onClick={copyBrowsePath}><Clipboard size={16} /></button></div>
+      </section>
+      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={files.length > 0 && selectedKeys.length === files.length} onChange={(event) => selectAll(event.target.checked)} />全选文件</label><button className="primary compact" disabled={!selectedKeys.length || downloading} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中文件</button></div>}</section>
+      {notice && <div className="browse-notice">{notice}</div>}
+      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span>{object.isFolder ? <button className="text-button" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}>打开</button> : <input type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleFile(object.key, event.target.checked)} />}</span></div>)}</section>
+    </>}
+  </>
 }
 
 interface UploadPageProps {

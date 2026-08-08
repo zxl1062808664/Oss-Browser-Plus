@@ -47,6 +47,31 @@ export interface UploadRequest {
   conflictStrategy: 'overwrite' | 'skip'
 }
 
+export interface OssObjectItem {
+  key: string
+  name: string
+  size: number
+  lastModified?: string
+  isFolder: boolean
+}
+
+export interface OssBucketItem {
+  name: string
+  region?: string
+  creationDate?: string
+}
+
+export interface ListObjectsRequest {
+  profileId: string
+  bucket: string
+  prefix: string
+  region?: string
+}
+
+export interface DownloadObjectsRequest extends ListObjectsRequest {
+  keys: string[]
+}
+
 export interface UploadProgressEvent {
   taskId: string
   percent: number
@@ -66,6 +91,9 @@ export interface DesktopApi {
   selectFolder: () => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
   cancelAllUploads: () => Promise<{ cancelled: number }>
+  listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>
+  listBuckets: (profileId: string) => Promise<OssBucketItem[]>
+  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number } | { cancelled: true }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
 }

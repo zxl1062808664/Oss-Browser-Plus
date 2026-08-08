@@ -209,9 +209,43 @@ h1, h2, p { margin: 0; }
 .target-picker-footer > span { color: var(--muted); font-size: 11px; }
 .toast { position: fixed; z-index: 100; right: 26px; bottom: 25px; display: flex; align-items: center; gap: 8px; padding: 11px 15px; color: #fff; background: #223244; border-radius: 5px; box-shadow: 0 8px 22px rgb(18 28 40 / 22%); font-size: 12px; }
 
+.browse-mode { display: flex; align-items: center; gap: 12px; margin-bottom: 15px; }
+.browse-mode > span { color: #4f5b69; font-size: 12px; font-weight: 600; }
+.browse-toolbar { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(200px, 1fr) minmax(280px, 1.5fr); align-items: end; gap: 15px; padding: 17px 19px; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
+.browse-field label { display: block; margin-bottom: 7px; color: #4f5b69; font-size: 12px; font-weight: 600; }
+.browse-field .select-wrap select { font-size: 12px; }
+.browse-scope-value { height: 39px; display: flex; align-items: center; overflow: hidden; padding: 0 11px; color: #415064; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.browse-path { height: 39px; display: flex; align-items: center; gap: 7px; padding-left: 12px; border: 1px solid var(--border); border-radius: 5px; background: #f8fafb; }
+.browse-path > span { min-width: 0; flex: 1; overflow: hidden; color: #415064; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.browse-path .icon-button { border: 0; background: transparent; }
+.browse-band { min-height: 53px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 15px; padding: 0 13px; background: #e9eef3; border: 1px solid #d9e0e7; border-radius: 6px; }
+.breadcrumbs { min-width: 0; display: flex; align-items: center; gap: 10px; color: #586677; font-size: 12px; }
+.breadcrumbs button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: 12px; }
+.breadcrumbs button:disabled { color: #8994a1; cursor: not-allowed; }
+.breadcrumbs > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.browse-actions { display: flex; align-items: center; gap: 14px; }
+.select-all { display: inline-flex; align-items: center; gap: 6px; color: #5d6b7b; font-size: 11px; white-space: nowrap; }
+.select-all input { width: 15px; height: 15px; accent-color: var(--blue); }
+.browse-notice { padding: 9px 12px; margin-top: 12px; color: #176b52; background: #eaf7f2; border: 1px solid #c9e7dc; border-radius: 5px; font-size: 11px; }
+.object-table { height: 410px; overflow-y: auto; margin-top: 15px; background: #fff; border: 1px solid var(--border); border-radius: 7px; scrollbar-gutter: stable; }
+.object-head, .object-row { display: grid; grid-template-columns: minmax(250px, 2fr) 100px minmax(160px, 1fr) 80px; align-items: center; gap: 14px; }
+.object-head { position: sticky; top: 0; z-index: 2; min-height: 39px; padding: 0 15px; color: #727f8e; background: #f7f9fb; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; }
+.object-row { min-height: 57px; padding: 8px 15px; color: #687585; border-bottom: 1px solid #e8ecf0; font-size: 12px; }
+.object-row:last-child { border-bottom: 0; }
+.object-row:hover { background: #fbfcfd; }
+.object-name { min-width: 0; display: flex; align-items: center; gap: 10px; color: #293746; }
+.object-name svg { flex: none; color: #4d73a2; }
+.object-name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.object-row > span:nth-child(3) { color: #7d8996; font-size: 11px; }
+.object-row input { width: 15px; height: 15px; accent-color: var(--blue); }
+.object-empty { height: 350px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8793a0; font-size: 12px; }
+.object-empty svg { color: #aab3bd; }
+
 @media (max-width: 1050px) {
   .content { padding-inline: 24px; }
   .target-band { grid-template-columns: minmax(145px, .8fr) minmax(165px, 1fr) minmax(245px, 1.4fr); gap: 12px; }
   .target-summary-title span { display: none; }
+  .browse-toolbar { grid-template-columns: 160px 190px 1fr; gap: 10px; }
+  .object-head, .object-row { grid-template-columns: minmax(220px, 2fr) 80px minmax(140px, 1fr) 60px; gap: 10px; }
   .task-head, .task-row { grid-template-columns: minmax(220px, 2fr) 76px minmax(120px, 1fr) 80px 70px; column-gap: 10px; }
 }
