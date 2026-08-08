@@ -18,7 +18,7 @@ declare module 'ali-oss' {
     head(objectName: string): Promise<unknown>
     multipartUpload(objectName: string, filePath: string, options?: MultipartOptions): Promise<unknown>
     cancel(): void
-    list(query: Record<string, unknown>): Promise<{ objects?: Array<{ name: string; size?: number; lastModified?: string | Date }>; prefixes?: string[] }>
+    list(query: Record<string, unknown>): Promise<{ objects?: Array<{ name: string; size?: number; lastModified?: string | Date }>; prefixes?: string[]; isTruncated?: boolean; nextMarker?: string }>
     getStream(name: string, options?: Record<string, unknown>): Promise<{ stream: NodeJS.ReadableStream; res?: unknown }>
   }
   const OSS: { new (options: ClientOptions): OSSClient }

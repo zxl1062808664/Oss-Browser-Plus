@@ -240,7 +240,6 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   const bucketName = mode === 'account' ? selectedBucket : preset?.bucket || ''
   const bucketRegion = mode === 'account' ? buckets.find((item) => item.name === selectedBucket)?.region : undefined
   const atBucketList = mode === 'account' && !selectedBucket
-  const files = objects.filter((item) => !item.isFolder)
 
   useEffect(() => {
     if (!profileId && config.profiles.length) setProfileId(config.profiles.find((item) => item.isDefault)?.id || config.profiles[0].id)
@@ -264,6 +263,10 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     setCurrentPrefix(rootPrefix)
     setSelectedKeys([])
   }, [rootPrefix, presetId])
+
+  useEffect(() => {
+    setSelectedKeys([])
+  }, [currentPrefix, selectedBucket])
 
   useEffect(() => {
     if (!profile || (mode === 'preset' && !preset)) {
@@ -293,9 +296,17 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     setDownloading(true)
     setNotice('正在准备下载...')
     try {
-      const result = await window.desktopApi.downloadObjects({ profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion, keys: selectedKeys })
+      const selectedItems = objects.filter((item) => selectedKeys.includes(item.key))
+      const result = await window.desktopApi.downloadObjects({
+        profileId: profile.id,
+        bucket: bucketName,
+        prefix: currentPrefix,
+        region: bucketRegion,
+        keys: selectedItems.filter((item) => !item.isFolder).map((item) => item.key),
+        folderKeys: selectedItems.filter((item) => item.isFolder).map((item) => item.key)
+      })
       if ('cancelled' in result) setNotice('已取消选择下载目录')
-      else setNotice(`已下载 ${result.count} 个文件到 ${result.directory}`)
+      else setNotice(`已下载 ${result.count} 个文件${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`)
       setSelectedKeys([])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '下载失败')
@@ -304,8 +315,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     }
   }
 
-  const toggleFile = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...current, key] : current.filter((item) => item !== key))
-  const selectAll = (checked: boolean) => setSelectedKeys(checked ? files.map((item) => item.key) : [])
+  const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
+  const selectAll = (checked: boolean) => setSelectedKeys(checked ? objects.map((item) => item.key) : [])
   const goUp = () => {
     if (mode === 'account' && selectedBucket && !currentPrefix) {
       setSelectedBucket('')
@@ -326,9 +337,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         {mode === 'preset' ? <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>)}</select><ChevronDown size={16} /></div></div> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
         <div className="browse-path"><span>{atBucketList ? 'oss://' : `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`}</span><button className="icon-button small" disabled={atBucketList} title="复制当前路径" onClick={copyBrowsePath}><Clipboard size={16} /></button></div>
       </section>
-      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={files.length > 0 && selectedKeys.length === files.length} onChange={(event) => selectAll(event.target.checked)} />全选文件</label><button className="primary compact" disabled={!selectedKeys.length || downloading} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中文件</button></div>}</section>
+      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="primary compact" disabled={!selectedKeys.length || downloading} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {notice && <div className="browse-notice">{notice}</div>}
-      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span>{object.isFolder ? <button className="text-button" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}>打开</button> : <input type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleFile(object.key, event.target.checked)} />}</span></div>)}</section>
+      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder && <button className="text-button" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}>打开</button>}<input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
     </>}
   </>
 }

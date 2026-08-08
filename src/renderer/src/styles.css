@@ -238,6 +238,7 @@ h1, h2, p { margin: 0; }
 .object-name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .object-row > span:nth-child(3) { color: #7d8996; font-size: 11px; }
 .object-row input { width: 15px; height: 15px; accent-color: var(--blue); }
+.object-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .object-empty { height: 350px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8793a0; font-size: 12px; }
 .object-empty svg { color: #aab3bd; }
 

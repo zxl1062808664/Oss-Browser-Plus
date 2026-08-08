@@ -70,6 +70,7 @@ export interface ListObjectsRequest {
 
 export interface DownloadObjectsRequest extends ListObjectsRequest {
   keys: string[]
+  folderKeys: string[]
 }
 
 export interface UploadProgressEvent {
@@ -93,7 +94,7 @@ export interface DesktopApi {
   cancelAllUploads: () => Promise<{ cancelled: number }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>
   listBuckets: (profileId: string) => Promise<OssBucketItem[]>
-  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number } | { cancelled: true }>
+  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number; folderCount: number } | { cancelled: true }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
 }

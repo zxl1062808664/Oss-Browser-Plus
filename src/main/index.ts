@@ -229,7 +229,28 @@ function registerIpc(): void {
     const client = createClient(profile, request.bucket, undefined, request.region)
     const basePrefix = request.prefix ? `${request.prefix.replace(/^\/+|\/+$/g, '')}/` : ''
     const directory = result.filePaths[0]
-    for (const key of request.keys) {
+    const keys = new Set(request.keys)
+
+    for (const folderKey of request.folderKeys) {
+      const folderPrefix = `${folderKey.replace(/^\/+|\/+$/g, '')}/`
+      const folderWithoutSlash = folderPrefix.slice(0, -1)
+      const relativeFolder = folderWithoutSlash.startsWith(basePrefix)
+        ? folderWithoutSlash.slice(basePrefix.length)
+        : path.basename(folderWithoutSlash)
+      const safeFolder = relativeFolder.split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
+      await fs.mkdir(path.join(directory, safeFolder), { recursive: true })
+
+      let marker: string | undefined
+      do {
+        const page = await client.list({ prefix: folderPrefix, 'max-keys': 1000, ...(marker ? { marker } : {}) })
+        for (const object of page.objects || []) {
+          if (object.name !== folderPrefix && !object.name.endsWith('/')) keys.add(object.name)
+        }
+        marker = page.isTruncated ? page.nextMarker : undefined
+      } while (marker)
+    }
+
+    for (const key of keys) {
       const relative = (key.startsWith(basePrefix) ? key.slice(basePrefix.length) : path.basename(key))
         .split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
       const destination = path.join(directory, relative)
@@ -238,7 +259,7 @@ function registerIpc(): void {
       if (!response.stream) throw new Error(`无法读取对象：${key}`)
       await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
     }
-    return { directory, count: request.keys.length }
+    return { directory, count: keys.size, folderCount: request.folderKeys.length }
   })
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {
