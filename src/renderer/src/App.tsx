@@ -34,7 +34,11 @@ function App() {
   const [toast, setToast] = useState('')
   const [folderPicker, setFolderPicker] = useState<{ root: string; tree: FolderTreeNode } | null>(null)
   const [folderScanning, setFolderScanning] = useState(false)
+  const [subfolder, setSubfolder] = useState('')
+  const [confirmUploadOpen, setConfirmUploadOpen] = useState(false)
+  const [pendingUpload, setPendingUpload] = useState<{ onlyTaskId?: string } | null>(null)
   const cancelRequested = useRef(false)
+  const subfolderPrefix = normalizePrefix(subfolder)
 
   const selectedProfile = config.profiles.find((item) => item.id === selectedProfileId)
   const availablePresets = useMemo(() => config.presets.filter((item) => item.profileId === selectedProfileId), [config.presets, selectedProfileId])
@@ -104,6 +108,17 @@ function App() {
 
   const startUpload = async (onlyTaskId?: string) => {
     if (!selectedTargets.length) return notify('请至少选择一个上传目标')
+    const hasPending = tasks.some((task) => (task.status === 'waiting' || task.status === 'failed') && (!onlyTaskId || task.id === onlyTaskId))
+    if (!hasPending) return notify('没有待上传文件')
+    if (subfolderPrefix) {
+      setPendingUpload(onlyTaskId ? { onlyTaskId } : null)
+      setConfirmUploadOpen(true)
+      return
+    }
+    await runUpload(onlyTaskId)
+  }
+
+  const runUpload = async (onlyTaskId?: string) => {
     const pending = tasks.filter((task) => (task.status === 'waiting' || task.status === 'failed') && (!onlyTaskId || task.id === onlyTaskId))
     if (!pending.length) return notify('没有待上传文件')
     const operations = pending.flatMap((task): UploadTask[] => task.targetPresetId
@@ -115,7 +130,7 @@ function App() {
     setBusy(true)
     const startedAt = performance.now()
     const resultCounts = { success: 0, skipped: 0, failed: 0 }
-    addLog('info', `开始执行 ${operations.length} 个上传任务，共 ${selectedTargets.length} 个目标`)
+    addLog('info', `开始执行 ${operations.length} 个上传任务，共 ${selectedTargets.length} 个目标${subfolderPrefix ? `，子目录 ${subfolderPrefix}` : ''}`)
     let cursor = 0
     const worker = async () => {
       while (cursor < operations.length && !cancelRequested.current) {
@@ -126,8 +141,8 @@ function App() {
           setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: '上传路径已不存在' } : item))
           continue
         }
-        const objectName = [normalizePrefix(target.prefix), task.relativePath].filter(Boolean).join('/')
-        const displayPath = `${fullPath(target)}${task.relativePath}`
+        const objectName = [normalizePrefix(target.prefix), subfolderPrefix, task.relativePath].filter(Boolean).join('/')
+        const displayPath = `${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath}`
         setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, error: undefined, objectName: displayPath } : item))
         try {
           const result = await window.desktopApi.upload({
@@ -141,7 +156,7 @@ function App() {
           const status: TaskStatus = result.skipped ? 'skipped' : 'success'
           resultCounts[result.skipped ? 'skipped' : 'success'] += 1
           setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status, progress: 100 } : item))
-          addLog('success', `${result.skipped ? '已跳过' : '上传成功'}：${fullPath(target)}${task.relativePath}`)
+          addLog('success', `${result.skipped ? '已跳过' : '上传成功'}：${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath}`)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (cancelRequested.current) {
@@ -149,7 +164,7 @@ function App() {
           } else {
             resultCounts.failed += 1
             setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: message } : item))
-            addLog('error', `上传失败：${fullPath(target)}${task.relativePath} · ${message}`)
+            addLog('error', `上传失败：${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath} · ${message}`)
           }
         }
       }
@@ -227,6 +242,7 @@ function App() {
             config={config} tasks={tasks} logs={logs} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
             availablePresets={availablePresets} selectedTargets={selectedTargets}
             selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy} folderScanning={folderScanning}
+            subfolder={subfolder} onSubfolderChange={setSubfolder}
             completed={completed} failed={failed} totalSize={totalSize} totalProgress={totalProgress}
             onProfileChange={selectProfile} onPresetChange={changePrimaryTarget} onTargetsChange={setSelectedTargetIds} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
             onUpload={startUpload} onSettings={() => setPage('settings')}
@@ -245,9 +261,24 @@ function App() {
         root={folderPicker.root}
         tree={folderPicker.tree}
         preset={selectedPreset}
+        subfolder={subfolder}
         onClose={() => setFolderPicker(null)}
         onConfirm={confirmFolderSelection}
       />}
+      {confirmUploadOpen && <Modal title="确认上传目录" wide onClose={() => setConfirmUploadOpen(false)}>
+        <div className="confirm-upload">
+          <p>你输入了子目录，本次队列中的文件将上传到以下文件夹：</p>
+          <div className="confirm-paths">
+            {selectedTargets.length ? selectedTargets.map((target) => <code key={target.id}>{`${fullPath(target)}${subfolderPrefix}/`}</code>) : <code className="empty">请先选择上传目标</code>}
+          </div>
+          <p className="confirm-tip">确认后本次队列的全部任务（含重试任务）都会存放到上述路径。若不想套这一层，请先清空子目录输入框再上传。</p>
+          <div className="modal-actions">
+            <span />
+            <button type="button" className="secondary" onClick={() => setConfirmUploadOpen(false)}>返回修改</button>
+            <button type="button" className="primary" onClick={() => { setConfirmUploadOpen(false); runUpload(pendingUpload?.onlyTaskId) }}><Upload size={16} />确认上传</button>
+          </div>
+        </div>
+      </Modal>}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
     </div>
   )
@@ -381,14 +412,16 @@ interface UploadPageProps {
   config: AppConfig; tasks: UploadTask[]; logs: LogEntry[]; selectedProfileId: string; selectedPresetId: string
   availablePresets: UploadPreset[]; selectedTargets: UploadPreset[]
   selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean; folderScanning: boolean
+  subfolder: string; onSubfolderChange: (value: string) => void
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
   onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
 }
 
 function UploadPage(props: UploadPageProps) {
-  const { config, tasks, logs, selectedPreset, selectedProfile } = props
+  const { config, tasks, logs, selectedPreset, selectedProfile, subfolder, onSubfolderChange } = props
   const [showTargetPicker, setShowTargetPicker] = useState(false)
+  const subfolderPrefix = normalizePrefix(subfolder)
   return <>
     <header className="page-header">
       <div><h1>上传中心</h1><p>选择预设路径，添加文件后即可上传</p></div>
@@ -409,8 +442,15 @@ function UploadPage(props: UploadPageProps) {
           <label htmlFor="path-target">上传路径</label>
           <div className="select-wrap"><select id="path-target" disabled={props.busy || !props.availablePresets.length} value={props.selectedPresetId} onChange={(event) => props.onPresetChange(event.target.value)}>{props.availablePresets.length ? props.availablePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}{preset.description ? ` · ${preset.description}` : ''}</option>) : <option value="">该账号暂无上传路径</option>}</select><ChevronDown size={16} /></div>
         </div>
-        <div className="path-field"><label>路径预览</label><div className={`path-preview ${selectedPreset ? '' : 'empty'}`}><span>{selectedPreset ? fullPath(selectedPreset) : '请前往设置为该账号添加路径'}</span><button className="icon-button small" disabled={!selectedPreset} title="复制 OSS 路径" onClick={props.onCopy}><Clipboard size={17} /></button></div></div>
+        <div className="path-field"><label>路径预览</label><div className={`path-preview ${selectedPreset ? '' : 'empty'}`}><span>{selectedPreset ? `${fullPath(selectedPreset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}` : '请前往设置为该账号添加路径'}</span><button className="icon-button small" disabled={!selectedPreset} title="复制 OSS 路径" onClick={props.onCopy}><Clipboard size={17} /></button></div></div>
       </section>
+
+      <div className="subfolder-bar">
+        <label htmlFor="subfolder-input" title="为空时直接放入目标路径；输入后会在目标路径下先套一层文件夹再存放选中内容">子目录（可选）</label>
+        <input id="subfolder-input" disabled={props.busy || !selectedPreset} value={subfolder} placeholder="留空则直接放入目标路径；输入则先套一层文件夹，例如 release-2024" onChange={(event) => onSubfolderChange(event.target.value)} />
+        {subfolderPrefix && selectedPreset && <span className="subfolder-preview">最终路径：<b>{`${fullPath(selectedPreset)}${subfolderPrefix}/`}</b>（此层级对本次队列全部任务生效）</span>}
+        {!subfolderPrefix && selectedPreset && <span className="subfolder-hint">未输入子目录，选中内容将直接放入目标路径 <b>{fullPath(selectedPreset)}</b></span>}
+      </div>
 
       <section className="target-summary">
         <div className="target-summary-title"><MapPin size={16} /><span>本次上传到 <b>{props.selectedTargets.length}</b> 个位置</span></div>
@@ -577,16 +617,18 @@ function SettingsEmpty({ title, text }: { title: string; text: string }) {
   return <div className="settings-empty"><Cloud size={25} /><strong>{title}</strong><span>{text}</span></div>
 }
 
-function FolderPickerModal({ root, tree, preset, onClose, onConfirm }: {
+function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }: {
   root: string
   tree: FolderTreeNode
   preset?: UploadPreset
+  subfolder?: string
   onClose: () => void
   onConfirm: (selectedPaths: string[]) => void | Promise<void>
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([tree.relativePath]))
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [submitting, setSubmitting] = useState(false)
+  const subfolderPrefix = normalizePrefix(subfolder || '')
 
   const toggleExpand = (relativePath: string) => {
     setExpanded((current) => {
@@ -693,9 +735,9 @@ function FolderPickerModal({ root, tree, preset, onClose, onConfirm }: {
       </div>
       <div className="folder-picker-footer">
         <span className="folder-selected">{summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '未勾选任何内容'}</span>
-        <span className="folder-preview" title={preset ? `${fullPath(preset)}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
-          ? `OSS 目标：${fullPath(preset)}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
-          : `OSS 目标：${fullPath(preset)}`) : '未选择上传路径'}</span>
+        <span className="folder-preview" title={preset ? `${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
+          ? `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
+          : `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}`) : '未选择上传路径'}</span>
         <button className="secondary" onClick={onClose}>取消</button>
         <button className="primary" disabled={!summary.fileCount || submitting} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${summary.fileCount} 个文件`}</button>
       </div>
