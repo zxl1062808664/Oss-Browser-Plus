@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Download, FileUp, FileText, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
-  ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
+  ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
+  Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, FolderTreeNode, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
 
@@ -303,6 +303,11 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   const [downloading, setDownloading] = useState(false)
   const [notice, setNotice] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [busyOp, setBusyOp] = useState(false)
+  const [renaming, setRenaming] = useState<OssObjectItem | null>(null)
+  const [transferTarget, setTransferTarget] = useState<'copy' | 'move' | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState<OssObjectItem[] | null>(null)
+  const [urlItem, setUrlItem] = useState<{ key: string; url: string } | null>(null)
   const profile = config.profiles.find((item) => item.id === profileId)
   const presets = config.presets.filter((item) => item.profileId === profileId)
   const preset = config.presets.find((item) => item.id === presetId && item.profileId === profileId)
@@ -385,6 +390,85 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     }
   }
 
+  const refreshObjects = () => setRefreshKey((value) => value + 1)
+
+  const openRename = (item: OssObjectItem) => setRenaming(item)
+
+  const confirmRename = async (newName: string) => {
+    if (!renaming || !profile || !bucketName) return
+    setBusyOp(true)
+    try {
+      const result = await window.desktopApi.renameObject({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion, key: renaming.key, newName
+      })
+      setNotice(`已重命名为：${result.key}`)
+      refreshObjects()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '重命名失败')
+    } finally {
+      setBusyOp(false)
+      setRenaming(null)
+    }
+  }
+
+  const requestDelete = (items: OssObjectItem[]) => setConfirmingDelete(items)
+
+  const confirmDelete = async () => {
+    if (!confirmingDelete || !profile || !bucketName) return
+    setBusyOp(true)
+    try {
+      const result = await window.desktopApi.deleteObjects({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion,
+        keys: confirmingDelete.map((item) => item.key)
+      })
+      setNotice(`已删除 ${result.deleted} 个对象`)
+      setSelectedKeys([])
+      refreshObjects()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '删除失败')
+    } finally {
+      setBusyOp(false)
+      setConfirmingDelete(null)
+    }
+  }
+
+  const requestTransfer = (mode: 'copy' | 'move') => setTransferTarget(mode)
+
+  const confirmTransfer = async (destinationPrefix: string) => {
+    if (!transferTarget || !selectedKeys.length || !profile || !bucketName) return
+    setBusyOp(true)
+    const action = transferTarget === 'copy' ? '复制' : '移动'
+    try {
+      const result = await window.desktopApi.transferObjects({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion,
+        sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget
+      })
+      setNotice(`${action}完成：共 ${result.count} 个对象`)
+      setSelectedKeys([])
+      refreshObjects()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : `${action}失败`)
+    } finally {
+      setBusyOp(false)
+      setTransferTarget(null)
+    }
+  }
+
+  const fetchUrl = async (item: OssObjectItem) => {
+    if (!profile || !bucketName) return
+    setBusyOp(true)
+    try {
+      const url = await window.desktopApi.getObjectUrl({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion, key: item.key
+      })
+      setUrlItem({ key: item.key, url })
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '获取地址失败')
+    } finally {
+      setBusyOp(false)
+    }
+  }
+
   const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
   const selectAll = (checked: boolean) => setSelectedKeys(checked ? objects.map((item) => item.key) : [])
   const goUp = () => {
@@ -407,10 +491,32 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         {mode === 'preset' ? <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>)}</select><ChevronDown size={16} /></div></div> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
         <div className="browse-path"><span>{atBucketList ? 'oss://' : `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`}</span><button className="icon-button small" disabled={atBucketList} title="复制当前路径" onClick={copyBrowsePath}><Clipboard size={16} /></button></div>
       </section>
-      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="primary compact" disabled={!selectedKeys.length || downloading} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
+      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {notice && <div className="browse-notice">{notice}</div>}
-      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder && <button className="text-button" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}>打开</button>}<input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
+      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={busyOp} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={busyOp} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={busyOp} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
     </>}
+    {renaming && <Modal title="重命名" onClose={() => !busyOp && setRenaming(null)}>
+      <RenameForm item={renaming} busy={busyOp} onCancel={() => setRenaming(null)} onConfirm={confirmRename} />
+    </Modal>}
+    {transferTarget && <Modal title={transferTarget === 'copy' ? '复制到目录' : '移动到目录'} onClose={() => !busyOp && setTransferTarget(null)}>
+      <TransferForm mode={transferTarget} items={objects.filter((item) => selectedKeys.includes(item.key))} busy={busyOp} onCancel={() => setTransferTarget(null)} onConfirm={confirmTransfer} />
+    </Modal>}
+    {confirmingDelete && <Modal title="确认删除" onClose={() => !busyOp && setConfirmingDelete(null)}>
+      <div className="op-form">
+        <p className="op-warn">即将删除以下 {confirmingDelete.length} 项，此操作不可恢复：</p>
+        <div className="op-target-list">{confirmingDelete.map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}</div>
+        {confirmingDelete.some((item) => item.isFolder) && <p className="op-warn">包含文件夹，其下所有对象都会被一并删除。</p>}
+        <div className="op-actions"><button type="button" className="text-button" disabled={busyOp} onClick={() => setConfirmingDelete(null)}>取消</button><button className="primary danger" disabled={busyOp} onClick={confirmDelete}><Trash2 size={16} />确认删除</button></div>
+      </div>
+    </Modal>}
+    {urlItem && <Modal title="对象地址" onClose={() => setUrlItem(null)}>
+      <div className="op-form">
+        <p className="op-tip">对象：<code>{urlItem.key}</code></p>
+        <div className="url-box"><code>{urlItem.url}</code><button className="icon-button small" title="复制地址" onClick={async () => { await window.desktopApi.copyText(urlItem.url); setNotice('地址已复制到剪贴板') }}><Clipboard size={15} /></button></div>
+        <p className="op-warn">签名地址 1 小时后过期，过期后需在列表中重新获取；私有 Bucket 使用该地址可临时访问。</p>
+        <div className="op-actions"><button type="button" className="text-button" onClick={() => setUrlItem(null)}>关闭</button></div>
+      </div>
+    </Modal>}
   </>
 }
 
@@ -788,6 +894,28 @@ function FolderTreeBranch({ node, depth, expanded, checked, onToggleExpand, onTo
       <FolderTreeBranch key={child.relativePath} node={child} depth={depth + 1} expanded={expanded} checked={checked} onToggleExpand={onToggleExpand} onToggleCheck={onToggleCheck} />
     ))}
   </>
+}
+
+function RenameForm({ item, busy, onCancel, onConfirm }: { item: OssObjectItem; busy: boolean; onCancel: () => void; onConfirm: (name: string) => void }) {
+  const [name, setName] = useState(item.name)
+  return <form className="op-form" onSubmit={(event) => { event.preventDefault(); if (name.trim() && !busy) onConfirm(name.trim()) }}>
+    <p className="op-tip">对象：<code>{item.key}{item.isFolder ? '/' : ''}</code></p>
+    {item.isFolder && <p className="op-warn">这是文件夹，重命名后其下所有对象的路径都会同步更新。</p>}
+    <Field label="新名称"><input autoFocus value={name} disabled={busy} onChange={(event) => setName(event.target.value)} /></Field>
+    <div className="op-actions"><button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy || !name.trim()}>保存</button></div>
+  </form>
+}
+
+function TransferForm({ mode, items, busy, onCancel, onConfirm }: { mode: 'copy' | 'move'; items: OssObjectItem[]; busy: boolean; onCancel: () => void; onConfirm: (prefix: string) => void }) {
+  const [prefix, setPrefix] = useState('')
+  const action = mode === 'copy' ? '复制' : '移动'
+  return <form className="op-form" onSubmit={(event) => { event.preventDefault(); if (!busy) onConfirm(prefix) }}>
+    <p className="op-tip">{action}以下 {items.length} 项（文件夹会包含其下所有内容）：</p>
+    <div className="op-target-list">{items.slice(0, 6).map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}{items.length > 6 && <code>…等 {items.length} 项</code>}</div>
+    <Field label="目标目录前缀（留空 = Bucket 根目录）"><input autoFocus value={prefix} placeholder="例如 archive/2024" disabled={busy} onChange={(event) => setPrefix(event.target.value)} /></Field>
+    {prefix.trim() && <p className="op-tip">{action}后目标路径示例：<code>{`${prefix.trim().replace(/^\/+|\/+$/g, '')}/${items[0]?.key.split('/').pop() || ''}`}</code></p>}
+    <div className="op-actions"><button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy}>{action}</button></div>
+  </form>
 }
 
 export default App

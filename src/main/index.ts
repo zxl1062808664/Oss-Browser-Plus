@@ -5,7 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, DownloadObjectsRequest, FolderTreeNode, ListObjectsRequest, LocalUploadItem, ProfileInput, UploadPreset, UploadRequest } from '../shared/types'
+import type { AppConfig, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsRequest, LocalUploadItem, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -155,6 +155,26 @@ async function collectSelection(root: string, selectedPaths: string[]): Promise<
     items.push(...await scanSelection(path.join(root, ...relativePath.split('/')), relativePath))
   }
   return items
+}
+
+/** 把文件/文件夹 key 展开为实际对象 key 列表（文件夹按前缀递归获取其下全部对象） */
+async function expandObjectKeys(client: InstanceType<typeof OSS>, keys: string[]): Promise<string[]> {
+  const result: string[] = []
+  for (const key of keys) {
+    if (!key.endsWith('/')) {
+      result.push(key)
+      continue
+    }
+    let marker: string | undefined
+    do {
+      const page = await client.list({ prefix: key, 'max-keys': 1000, ...(marker ? { marker } : {}) })
+      for (const object of page.objects || []) {
+        if (object.name !== key) result.push(object.name)
+      }
+      marker = page.isTruncated ? page.nextMarker : undefined
+    } while (marker)
+  }
+  return result
 }
 
 function registerIpc(): void {
@@ -328,6 +348,85 @@ function registerIpc(): void {
       await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
     }
     return { directory, count: keys.size, folderCount: request.folderKeys.length }
+  })
+
+  ipcMain.handle('oss:delete-objects', async (_event, request: DeleteObjectsRequest) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    const keys = await expandObjectKeys(client, request.keys)
+    for (const key of keys) await client.delete(key)
+    return { deleted: keys.length }
+  })
+
+  ipcMain.handle('oss:rename-object', async (_event, request: RenameObjectRequest) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    const newName = request.newName.trim()
+    if (!newName) throw new Error('新名称不能为空')
+    if (/[\\/]/.test(newName)) throw new Error('新名称不能包含 / 或 \\')
+    const isFolder = request.key.endsWith('/')
+    const withSlash = request.key.slice(0, -1)
+    const destKey = isFolder
+      ? `${(withSlash.includes('/') ? request.key.slice(0, withSlash.lastIndexOf('/') + 1) : '')}${newName}/`
+      : `${(request.key.includes('/') ? request.key.slice(0, request.key.lastIndexOf('/') + 1) : '')}${newName}`
+    if (destKey === request.key) throw new Error('新名称与原名称相同')
+    const objects = isFolder ? await expandObjectKeys(client, [request.key]) : [request.key]
+    for (const object of objects) {
+      if (isFolder) {
+        const rel = object.slice(request.key.length)
+        const targetKey = [destKey.slice(0, -1), rel].filter(Boolean).join('/')
+        await client.copy(targetKey, object)
+        await client.delete(object)
+      } else {
+        await client.copy(destKey, object)
+        await client.delete(object)
+      }
+    }
+    return { key: destKey }
+  })
+
+  ipcMain.handle('oss:transfer-objects', async (_event, request: TransferObjectsRequest) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    const destPrefix = request.destinationPrefix.trim().replace(/^\/+|\/+$/g, '')
+    let count = 0
+    for (const sourceKey of request.sourceKeys) {
+      if (sourceKey.endsWith('/')) {
+        const folderName = sourceKey.slice(0, -1).split('/').pop() || ''
+        const folderDestPrefix = [destPrefix, folderName].filter(Boolean).join('/')
+        const objects = await expandObjectKeys(client, [sourceKey])
+        for (const object of objects) {
+          const rel = object.slice(sourceKey.length)
+          const targetKey = [folderDestPrefix, rel].filter(Boolean).join('/')
+          if (targetKey === object) throw new Error(`目标位置与原位置相同：${object}`)
+          await client.copy(targetKey, object)
+          if (request.mode === 'move') await client.delete(object)
+          count += 1
+        }
+      } else {
+        const name = sourceKey.split('/').pop() || ''
+        const targetKey = [destPrefix, name].filter(Boolean).join('/')
+        if (targetKey === sourceKey) throw new Error(`目标位置与原位置相同：${sourceKey}`)
+        await client.copy(targetKey, sourceKey)
+        if (request.mode === 'move') await client.delete(sourceKey)
+        count += 1
+      }
+    }
+    return { count }
+  })
+
+  ipcMain.handle('oss:get-object-url', async (_event, request: GetObjectUrlRequest) => {
+    const config = await readConfig()
+    const profile = config.profiles.find((item) => item.id === request.profileId)
+    if (!profile) throw new Error('OSS 配置不存在')
+    const client = createClient(profile, request.bucket, undefined, request.region)
+    return client.signatureUrl(request.key, { expires: request.expires || 3600 })
   })
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {

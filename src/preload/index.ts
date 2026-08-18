@@ -18,6 +18,10 @@ const api: DesktopApi = {
   listObjects: (request) => ipcRenderer.invoke('oss:list-objects', request),
   listBuckets: (profileId) => ipcRenderer.invoke('oss:list-buckets', profileId),
   downloadObjects: (request) => ipcRenderer.invoke('oss:download-objects', request),
+  deleteObjects: (request) => ipcRenderer.invoke('oss:delete-objects', request),
+  renameObject: (request) => ipcRenderer.invoke('oss:rename-object', request),
+  transferObjects: (request) => ipcRenderer.invoke('oss:transfer-objects', request),
+  getObjectUrl: (request) => ipcRenderer.invoke('oss:get-object-url', request),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   onUploadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)
