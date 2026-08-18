@@ -13,6 +13,7 @@ const api: DesktopApi = {
   pickFolderRoot: () => ipcRenderer.invoke('folder:pick-root'),
   getFolderTree: (root) => ipcRenderer.invoke('folder:tree', root),
   collectFolderSelection: (root, selectedPaths) => ipcRenderer.invoke('folder:collect', root, selectedPaths),
+  selectFolderForUpload: () => ipcRenderer.invoke('folder:select-upload'),
   upload: (request) => ipcRenderer.invoke('oss:upload', request),
   cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
   listObjects: (request) => ipcRenderer.invoke('oss:list-objects', request),

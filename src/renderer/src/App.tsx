@@ -309,6 +309,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   const [confirmingDelete, setConfirmingDelete] = useState<OssObjectItem[] | null>(null)
   const [urlItem, setUrlItem] = useState<{ key: string; signed: string; publicUrl: string } | null>(null)
   const [urlExpires, setUrlExpires] = useState(604800)
+  const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadOpen, setUploadOpen] = useState(false)
   const urlExpireOptions = [
     { label: '有效期：1 小时', value: 3600 },
     { label: '有效期：1 天', value: 86400 },
@@ -364,6 +367,10 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [atBucketList, bucketName, bucketRegion, currentPrefix, mode, preset, profile, refreshKey])
+
+  useEffect(() => window.desktopApi.onUploadProgress((event) => {
+    setUploadQueue((current) => current.map((item) => item.id === event.taskId ? { ...item, progress: event.percent } : item))
+  }), [])
 
   const copyBrowsePath = async () => {
     if (!bucketName) return
@@ -496,6 +503,50 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     setNotice(`${label}已复制到剪贴板`)
   }
 
+  const uploadToCurrentDir = async (items: LocalUploadItem[]) => {
+    if (!profile || !bucketName || !items.length) return
+    const tasks: UploadTask[] = items.map((item) => ({ ...item, status: 'waiting', progress: 0 }))
+    setUploadQueue((queue) => [...queue, ...tasks])
+    setUploading(true)
+    let cursor = 0
+    let failedCount = 0
+    const worker = async () => {
+      while (cursor < tasks.length) {
+        const task = tasks[cursor++]
+        const objectName = [currentPrefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
+        setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, objectName } : item))
+        try {
+          await window.desktopApi.upload({
+            taskId: task.id,
+            absolutePath: task.absolutePath,
+            objectName,
+            profileId: profile.id,
+            bucket: bucketName,
+            conflictStrategy: config.conflictStrategy
+          })
+          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'success', progress: 100 } : item))
+        } catch (error) {
+          failedCount += 1
+          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'failed', error: error instanceof Error ? error.message : String(error) } : item))
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(config.concurrentUploads, tasks.length) }, worker))
+    setUploading(false)
+    setNotice(`上传完成：成功 ${tasks.length - failedCount} / ${tasks.length} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+    refreshObjects()
+  }
+
+  const uploadFilesToDir = async () => {
+    const items = await window.desktopApi.selectFiles()
+    if (items.length) await uploadToCurrentDir(items)
+  }
+
+  const uploadFolderToDir = async () => {
+    const items = await window.desktopApi.selectFolderForUpload()
+    if (items.length) await uploadToCurrentDir(items)
+  }
+
   const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
   const selectAll = (checked: boolean) => setSelectedKeys(checked ? objects.map((item) => item.key) : [])
   const goUp = () => {
@@ -510,7 +561,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   }
 
   return <>
-    <header className="page-header"><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
+    <header className="page-header"><div className="header-btn-wrap"><button className="icon-button" title="查看上传进度" onClick={() => setUploadOpen(true)}><Upload size={19} /></button>{uploadQueue.some((item) => item.status === 'waiting' || item.status === 'uploading') && <span className="upload-badge">{uploadQueue.filter((item) => item.status === 'waiting' || item.status === 'uploading').length}</span>}</div><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
     <div className="browse-mode"><span>查看范围</span><div className="segmented"><button className={mode === 'account' ? 'active' : ''} onClick={() => setMode('account')}>整个账号</button><button className={mode === 'preset' ? 'active' : ''} onClick={() => setMode('preset')}>预设路径</button></div></div>
     {!config.profiles.length ? <div className="empty-setup"><span className="empty-icon"><Cloud size={30} /></span><h2>先配置 OSS 账号</h2><p>配置账号后即可查看 OSS 文件。</p></div> : mode === 'preset' && !preset ? <div className="empty-setup"><span className="empty-icon"><FolderSearch size={30} /></span><h2>暂无可查看路径</h2><p>请在设置中添加一个常用路径，或切换到整个账号模式。</p></div> : <>
       <section className="browse-toolbar">
@@ -518,10 +569,15 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         {mode === 'preset' ? <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>)}</select><ChevronDown size={16} /></div></div> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
         <div className="browse-path"><span>{atBucketList ? 'oss://' : `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`}</span><button className="icon-button small" disabled={atBucketList} title="复制当前路径" onClick={copyBrowsePath}><Clipboard size={16} /></button></div>
       </section>
+      {!atBucketList && <div className="browse-upload-bar">
+        <span className="browse-upload-title"><Upload size={15} />上传到 <b>{bucketName}{currentPrefix ? `/${currentPrefix}/` : '/'}</b></span>
+        <button className="secondary compact" disabled={uploading} onClick={uploadFilesToDir}><FileUp size={15} />上传文件</button>
+        <button className="secondary compact" disabled={uploading} onClick={uploadFolderToDir}><FolderOpen size={15} />上传文件夹</button>
+      </div>}
       <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {notice && <div className="browse-notice">{notice}</div>}
       <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={busyOp} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={busyOp} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={busyOp} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
-    </>}
+      </>}
     {renaming && <Modal title="重命名" onClose={() => !busyOp && setRenaming(null)}>
       <RenameForm item={renaming} busy={busyOp} onCancel={() => setRenaming(null)} onConfirm={confirmRename} />
     </Modal>}
@@ -558,6 +614,18 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         </div>
         <p className="op-warn">签名地址到期后需在面板中重新选择有效期生成；长期地址仅当 Bucket 为公共读时可直接访问，私有 Bucket 请使用签名地址。</p>
         <div className="op-actions"><button type="button" className="text-button" onClick={() => setUrlItem(null)}>关闭</button></div>
+      </div>
+    </Modal>}
+    {uploadOpen && <Modal title="上传进度" wide onClose={() => setUploadOpen(false)}>
+      <div className="op-form">
+        {!uploadQueue.length ? <div className="picker-empty">暂无上传任务</div> : <>
+          <div className="browse-upload-list">{uploadQueue.map((task) => <div className="browse-upload-row" key={task.id}>
+            <span className="browse-upload-name" title={task.objectName || task.relativePath}>{task.relativePath}</span>
+            <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>
+            <span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? `${task.progress}%` : task.status === 'success' ? '完成' : task.status === 'failed' ? '失败' : '等待'}</span>
+          </div>)}</div>
+          <div className="op-actions"><button type="button" className="text-button" disabled={uploading} onClick={() => setUploadQueue((queue) => queue.filter((item) => !['success', 'failed'].includes(item.status)))}>清空已完成</button><button type="button" className="primary" onClick={() => setUploadOpen(false)}>关闭</button></div>
+        </>}
       </div>
     </Modal>}
   </>

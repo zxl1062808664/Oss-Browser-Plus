@@ -177,6 +177,30 @@ async function expandObjectKeys(client: InstanceType<typeof OSS>, keys: string[]
   return result
 }
 
+/** 递归扫描本地文件夹为上传任务，relativePath 以文件夹名开头，保留完整层级 */
+async function scanUploadFolder(root: string, current = root): Promise<LocalUploadItem[]> {
+  let entries: Dirent[] = []
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const absolutePath = path.join(current, entry.name)
+    if (entry.isDirectory()) return scanUploadFolder(root, absolutePath)
+    if (!entry.isFile()) return []
+    const stat = await fs.stat(absolutePath)
+    return [{
+      id: randomUUID(),
+      absolutePath,
+      relativePath: path.join(path.basename(root), path.relative(root, absolutePath)).replaceAll('\\', '/'),
+      name: entry.name,
+      size: stat.size
+    }]
+  }))
+  return nested.flat()
+}
+
 /** 构造对象公开访问 URL（不签名、长期有效；仅当 Bucket 为公共读时可访问） */
 function objectPublicUrl(bucket: string, region: string, endpoint: string, key: string): string {
   const host = region ? `${region}.aliyuncs.com` : endpoint
@@ -275,6 +299,12 @@ function registerIpc(): void {
   ipcMain.handle('folder:tree', async (_event, root: string) => scanTree(root))
 
   ipcMain.handle('folder:collect', async (_event, root: string, selectedPaths: string[]) => collectSelection(root, selectedPaths))
+
+  ipcMain.handle('folder:select-upload', async () => {
+    const result = await dialog.showOpenDialog({ title: '选择要上传的文件夹', properties: ['openDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return []
+    return scanUploadFolder(result.filePaths[0])
+  })
 
   ipcMain.handle('clipboard:write', (_event, value: string) => clipboard.writeText(value))
 

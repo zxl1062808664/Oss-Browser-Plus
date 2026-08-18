@@ -137,6 +137,7 @@ export interface DesktopApi {
   pickFolderRoot: () => Promise<string | null>
   getFolderTree: (root: string) => Promise<FolderTreeNode>
   collectFolderSelection: (root: string, selectedRelativePaths: string[]) => Promise<LocalUploadItem[]>
+  selectFolderForUpload: () => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
   cancelAllUploads: () => Promise<{ cancelled: number }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>

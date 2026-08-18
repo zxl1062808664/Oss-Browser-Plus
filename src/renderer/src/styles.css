@@ -30,10 +30,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .status-dot.online { background: #39ba85; box-shadow: 0 0 0 3px rgb(57 186 133 / 14%); }
 
 .content { grid-column: 2; padding: 18px 30px 26px; min-width: 0; }
-.page-header { min-height: 0; display: flex; align-items: center; justify-content: flex-end; margin-bottom: 12px; }
+.page-header { min-height: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
 h1, h2, p { margin: 0; }
 .page-header h1 { font-size: 24px; line-height: 30px; letter-spacing: 0; }
 .page-header p { margin-top: 5px; color: var(--muted); font-size: 13px; }
+.header-btn-wrap { position: relative; display: inline-flex; }
+.upload-badge { position: absolute; top: -5px; right: -7px; min-width: 16px; height: 16px; display: grid; place-items: center; padding: 0 4px; color: #fff; background: var(--blue); border: 2px solid #f3f5f7; border-radius: 999px; font-size: 9px; font-weight: 700; line-height: 1; }
 .icon-button { width: 38px; height: 38px; display: inline-grid; place-items: center; border: 1px solid var(--border); border-radius: 6px; color: #536171; background: #fff; cursor: pointer; }
 .icon-button:hover { color: #18212f; background: #f7f9fb; border-color: #c9d1db; }
 .icon-button.small { width: 31px; height: 31px; }
@@ -280,6 +282,20 @@ h1, h2, p { margin: 0; }
 .object-actions .icon-button.small { width: 27px; height: 27px; }
 .object-empty { height: 350px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #8793a0; font-size: 12px; }
 .object-empty svg { color: #aab3bd; }
+.browse-upload-bar { min-height: 42px; display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 5px 13px; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
+.browse-upload-title { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; overflow: hidden; color: #4f5b69; font-size: 11px; white-space: nowrap; }
+.browse-upload-title svg { flex: none; color: var(--blue); }
+.browse-upload-title b { overflow: hidden; color: #2c4a6e; font: 11px Consolas, monospace; text-overflow: ellipsis; }
+.browse-upload-panel { margin-top: 14px; }
+.browse-upload-list { max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid var(--border); border-radius: 6px; scrollbar-gutter: stable; }
+.browse-upload-row { min-height: 40px; display: grid; grid-template-columns: minmax(180px, 2fr) minmax(120px, 1fr) 52px; align-items: center; gap: 12px; padding: 6px 13px; border-bottom: 1px solid #e8ecf0; font-size: 11px; }
+.browse-upload-row:last-child { border-bottom: 0; }
+.browse-upload-name { overflow: hidden; color: #3a4b5f; white-space: nowrap; text-overflow: ellipsis; }
+.browse-upload-row .progress-track { height: 5px; }
+.upload-status { color: #7b8794; font-size: 10px; text-align: right; }
+.upload-status.uploading { color: var(--blue); }
+.upload-status.success { color: var(--green); }
+.upload-status.failed { color: var(--red); }
 .secondary.danger-op { color: #a23d3d; border-color: #e2c1c1; }
 .secondary.danger-op:hover { color: var(--red); background: #fff7f7; border-color: #e7b5b5; }
 .primary.danger { background: var(--red); border-color: var(--red); }
