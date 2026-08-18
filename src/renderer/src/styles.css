@@ -292,8 +292,13 @@ h1, h2, p { margin: 0; }
 .op-warn code { color: inherit; }
 .op-target-list { display: grid; gap: 4px; max-height: 150px; overflow-y: auto; padding: 9px 10px; margin: 10px 0 14px; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; }
 .op-target-list code { overflow: hidden; color: #415064; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
-.url-box { display: flex; align-items: center; gap: 8px; padding: 9px 11px; margin-top: 10px; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; }
-.url-box code { min-width: 0; flex: 1; overflow: hidden; color: #33506f; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.url-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 11px; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; }
+.url-box code { min-width: 0; overflow: hidden; color: #33506f; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.url-field { display: grid; gap: 6px; margin-top: 12px; }
+.url-field label { color: #4f5b69; font-size: 11px; font-weight: 600; }
+.url-field-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.url-field-head select { flex: none; height: 28px; padding: 0 8px; border: 1px solid #cdd5df; border-radius: 5px; color: #4f5b69; background: #fff; font-size: 11px; }
+.url-field-head select:disabled { color: #8a95a2; background: #f2f4f6; }
 .op-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 18px; margin-top: 16px; border-top: 1px solid #e6eaee; }
 
 @media (max-width: 1050px) {

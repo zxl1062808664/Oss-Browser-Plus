@@ -177,6 +177,13 @@ async function expandObjectKeys(client: InstanceType<typeof OSS>, keys: string[]
   return result
 }
 
+/** 构造对象公开访问 URL（不签名、长期有效；仅当 Bucket 为公共读时可访问） */
+function objectPublicUrl(bucket: string, region: string, endpoint: string, key: string): string {
+  const host = region ? `${region}.aliyuncs.com` : endpoint
+  const encodedKey = key.split('/').map(encodeURIComponent).join('/')
+  return `https://${bucket}.${host}/${encodedKey}`
+}
+
 function registerIpc(): void {
   ipcMain.handle('config:get', async () => publicConfig(await readConfig()))
 
@@ -425,8 +432,12 @@ function registerIpc(): void {
     const config = await readConfig()
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
+    if (request.key.endsWith('/')) throw new Error('文件夹没有对象地址，请选择具体文件')
     const client = createClient(profile, request.bucket, undefined, request.region)
-    return client.signatureUrl(request.key, { expires: request.expires || 3600 })
+    return {
+      signed: client.signatureUrl(request.key, { expires: request.expires || 3600 }),
+      publicUrl: objectPublicUrl(request.bucket, request.region || profile.region, profile.endpoint, request.key)
+    }
   })
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {

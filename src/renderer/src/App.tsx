@@ -307,7 +307,13 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   const [renaming, setRenaming] = useState<OssObjectItem | null>(null)
   const [transferTarget, setTransferTarget] = useState<'copy' | 'move' | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<OssObjectItem[] | null>(null)
-  const [urlItem, setUrlItem] = useState<{ key: string; url: string } | null>(null)
+  const [urlItem, setUrlItem] = useState<{ key: string; signed: string; publicUrl: string } | null>(null)
+  const [urlExpires, setUrlExpires] = useState(604800)
+  const urlExpireOptions = [
+    { label: '有效期：1 小时', value: 3600 },
+    { label: '有效期：1 天', value: 86400 },
+    { label: '有效期：7 天', value: 604800 }
+  ]
   const profile = config.profiles.find((item) => item.id === profileId)
   const presets = config.presets.filter((item) => item.profileId === profileId)
   const preset = config.presets.find((item) => item.id === presetId && item.profileId === profileId)
@@ -458,15 +464,36 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     if (!profile || !bucketName) return
     setBusyOp(true)
     try {
-      const url = await window.desktopApi.getObjectUrl({
-        profileId: profile.id, bucket: bucketName, region: bucketRegion, key: item.key
+      const result = await window.desktopApi.getObjectUrl({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion, key: item.key, expires: urlExpires
       })
-      setUrlItem({ key: item.key, url })
+      setUrlItem({ key: item.key, signed: result.signed, publicUrl: result.publicUrl })
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '获取地址失败')
     } finally {
       setBusyOp(false)
     }
+  }
+
+  const refreshSignedUrl = async (expires: number) => {
+    if (!profile || !bucketName || !urlItem) return
+    setBusyOp(true)
+    try {
+      const result = await window.desktopApi.getObjectUrl({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion, key: urlItem.key, expires
+      })
+      setUrlExpires(expires)
+      setUrlItem({ ...urlItem, signed: result.signed })
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '重新生成签名地址失败')
+    } finally {
+      setBusyOp(false)
+    }
+  }
+
+  const copyUrlValue = async (value: string, label: string) => {
+    await window.desktopApi.copyText(value)
+    setNotice(`${label}已复制到剪贴板`)
   }
 
   const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
@@ -509,11 +536,18 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         <div className="op-actions"><button type="button" className="text-button" disabled={busyOp} onClick={() => setConfirmingDelete(null)}>取消</button><button className="primary danger" disabled={busyOp} onClick={confirmDelete}><Trash2 size={16} />确认删除</button></div>
       </div>
     </Modal>}
-    {urlItem && <Modal title="对象地址" onClose={() => setUrlItem(null)}>
+    {urlItem && <Modal title="对象地址" wide onClose={() => setUrlItem(null)}>
       <div className="op-form">
         <p className="op-tip">对象：<code>{urlItem.key}</code></p>
-        <div className="url-box"><code>{urlItem.url}</code><button className="icon-button small" title="复制地址" onClick={async () => { await window.desktopApi.copyText(urlItem.url); setNotice('地址已复制到剪贴板') }}><Clipboard size={15} /></button></div>
-        <p className="op-warn">签名地址 1 小时后过期，过期后需在列表中重新获取；私有 Bucket 使用该地址可临时访问。</p>
+        <div className="url-field">
+          <div className="url-field-head"><label>签名地址</label><select value={urlExpires} disabled={busyOp} onChange={(event) => refreshSignedUrl(Number(event.target.value))}>{urlExpireOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+          <div className="url-box"><code>{urlItem.signed}</code><button className="secondary compact" title="复制签名地址" onClick={() => copyUrlValue(urlItem.signed, '签名地址')}><Clipboard size={14} />复制</button></div>
+        </div>
+        <div className="url-field">
+          <div className="url-field-head"><label>长期地址（公开访问，不过期）</label></div>
+          <div className="url-box"><code>{urlItem.publicUrl}</code><button className="secondary compact" title="复制长期地址" onClick={() => copyUrlValue(urlItem.publicUrl, '长期地址')}><Clipboard size={14} />复制</button></div>
+        </div>
+        <p className="op-warn">签名地址到期后需在面板中重新选择有效期生成；长期地址仅当 Bucket 为公共读时可直接访问，私有 Bucket 请使用签名地址。</p>
         <div className="op-actions"><button type="button" className="text-button" onClick={() => setUrlItem(null)}>关闭</button></div>
       </div>
     </Modal>}

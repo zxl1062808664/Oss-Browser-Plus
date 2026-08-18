@@ -145,7 +145,7 @@ export interface DesktopApi {
   deleteObjects: (request: DeleteObjectsRequest) => Promise<{ deleted: number }>
   renameObject: (request: RenameObjectRequest) => Promise<{ key: string }>
   transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number }>
-  getObjectUrl: (request: GetObjectUrlRequest) => Promise<string>
+  getObjectUrl: (request: GetObjectUrlRequest) => Promise<{ signed: string; publicUrl: string }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
 }
