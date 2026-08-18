@@ -300,6 +300,17 @@ h1, h2, p { margin: 0; }
 .url-field-head select { flex: none; height: 28px; padding: 0 8px; border: 1px solid #cdd5df; border-radius: 5px; color: #4f5b69; background: #fff; font-size: 11px; }
 .url-field-head select:disabled { color: #8a95a2; background: #f2f4f6; }
 .op-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 18px; margin-top: 16px; border-top: 1px solid #e6eaee; }
+.picker-path { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.picker-breadcrumb { min-width: 0; overflow: hidden; color: #415064; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.picker-nav { flex: none; display: flex; align-items: center; gap: 8px; }
+.picker-dirs { min-height: 200px; max-height: 240px; overflow-y: auto; margin-top: 8px; border: 1px solid var(--border); border-radius: 5px; background: #fff; scrollbar-gutter: stable; }
+.picker-dir { width: 100%; min-height: 37px; display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px; align-items: center; gap: 8px; padding: 0 11px; border: 0; border-bottom: 1px solid #eef1f4; color: #293746; background: transparent; cursor: pointer; text-align: left; font-size: 12px; }
+.picker-dir:last-child { border-bottom: 0; }
+.picker-dir:hover { background: #f2f6fb; }
+.picker-dir svg { color: #4d73a2; }
+.picker-dir span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.picker-empty { min-height: 200px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #8793a0; font-size: 12px; }
+.picker-filecount { margin-top: 7px; color: #7b8794; font-size: 10px; }
 
 @media (max-width: 1050px) {
   .content { padding-inline: 24px; }

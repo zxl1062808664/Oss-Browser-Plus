@@ -526,7 +526,16 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
       <RenameForm item={renaming} busy={busyOp} onCancel={() => setRenaming(null)} onConfirm={confirmRename} />
     </Modal>}
     {transferTarget && <Modal title={transferTarget === 'copy' ? '复制到目录' : '移动到目录'} onClose={() => !busyOp && setTransferTarget(null)}>
-      <TransferForm mode={transferTarget} items={objects.filter((item) => selectedKeys.includes(item.key))} busy={busyOp} onCancel={() => setTransferTarget(null)} onConfirm={confirmTransfer} />
+      <OssFolderPicker
+        profileId={profile?.id || ''}
+        bucket={bucketName}
+        region={bucketRegion}
+        mode={transferTarget}
+        items={objects.filter((item) => selectedKeys.includes(item.key))}
+        busy={busyOp}
+        onCancel={() => setTransferTarget(null)}
+        onSelect={confirmTransfer}
+      />
     </Modal>}
     {confirmingDelete && <Modal title="确认删除" onClose={() => !busyOp && setConfirmingDelete(null)}>
       <div className="op-form">
@@ -940,16 +949,72 @@ function RenameForm({ item, busy, onCancel, onConfirm }: { item: OssObjectItem; 
   </form>
 }
 
-function TransferForm({ mode, items, busy, onCancel, onConfirm }: { mode: 'copy' | 'move'; items: OssObjectItem[]; busy: boolean; onCancel: () => void; onConfirm: (prefix: string) => void }) {
-  const [prefix, setPrefix] = useState('')
+function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCancel, onSelect }: {
+  profileId: string
+  bucket: string
+  region?: string
+  mode: 'copy' | 'move'
+  items: OssObjectItem[]
+  busy: boolean
+  onCancel: () => void
+  onSelect: (prefix: string) => void
+}) {
+  const [currentPrefix, setCurrentPrefix] = useState('')
+  const [folders, setFolders] = useState<OssObjectItem[]>([])
+  const [fileCount, setFileCount] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
   const action = mode === 'copy' ? '复制' : '移动'
-  return <form className="op-form" onSubmit={(event) => { event.preventDefault(); if (!busy) onConfirm(prefix) }}>
-    <p className="op-tip">{action}以下 {items.length} 项（文件夹会包含其下所有内容）：</p>
+
+  useEffect(() => {
+    if (!profileId || !bucket) return
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    window.desktopApi.listObjects({ profileId, bucket, prefix: currentPrefix, region })
+      .then((list) => {
+        if (cancelled) return
+        setFolders(list.filter((item) => item.isFolder))
+        setFileCount(list.filter((item) => !item.isFolder).length)
+      })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : '读取目录失败') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [profileId, bucket, currentPrefix, region, refreshKey])
+
+  const goUp = () => {
+    if (!currentPrefix) return
+    setCurrentPrefix(currentPrefix.includes('/') ? currentPrefix.slice(0, currentPrefix.lastIndexOf('/')) : '')
+  }
+
+  return <div className="op-form">
+    <p className="op-tip">{action}以下 {items.length} 项到所选目录（文件夹会包含其下所有内容）：</p>
     <div className="op-target-list">{items.slice(0, 6).map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}{items.length > 6 && <code>…等 {items.length} 项</code>}</div>
-    <Field label="目标目录前缀（留空 = Bucket 根目录）"><input autoFocus value={prefix} placeholder="例如 archive/2024" disabled={busy} onChange={(event) => setPrefix(event.target.value)} /></Field>
-    {prefix.trim() && <p className="op-tip">{action}后目标路径示例：<code>{`${prefix.trim().replace(/^\/+|\/+$/g, '')}/${items[0]?.key.split('/').pop() || ''}`}</code></p>}
-    <div className="op-actions"><button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy}>{action}</button></div>
-  </form>
+
+    <div className="picker-path">
+      <span className="picker-breadcrumb" title={currentPrefix || 'Bucket 根目录'}>{currentPrefix ? `目录：${currentPrefix}/` : '目录：Bucket 根目录'}</span>
+      <div className="picker-nav">
+        <button type="button" className="text-button" disabled={!currentPrefix || busy || loading} onClick={goUp}><ArrowUp size={13} />上级</button>
+        <button type="button" className="icon-button small" title="刷新目录" disabled={busy || loading} onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={14} /></button>
+      </div>
+    </div>
+
+    <div className="picker-dirs">
+      {loading ? <div className="picker-empty"><LoaderCircle className="spin" size={18} />正在读取目录...</div>
+        : error ? <div className="picker-empty">{error}</div>
+        : !folders.length ? <div className="picker-empty">{fileCount ? '此目录下没有子文件夹' : '当前目录为空'}</div>
+        : folders.map((folder) => <button type="button" key={folder.key} className="picker-dir" disabled={busy} onClick={() => setCurrentPrefix(folder.key.replace(/\/+$/, ''))}><FolderOpen size={16} /><span>{folder.name}</span><ChevronRight size={13} /></button>)}
+    </div>
+    {!loading && !error && <div className="picker-filecount">本目录包含 {fileCount} 个文件；选中的 {items.length} 项将以各自的名称进入所选目录内。</div>}
+
+    {mode === 'move' && <p className="op-warn">移动完成后，原位置的对象会被删除。</p>}
+
+    <div className="op-actions">
+      <button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button>
+      <button type="button" className="primary" disabled={busy || loading} onClick={() => onSelect(currentPrefix)}><Check size={16} />选择当前目录</button>
+    </div>
+  </div>
 }
 
 export default App
