@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Download, FileUp, FileText, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
-  ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, Settings, Trash2, Upload, X
+  ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, FolderTreeNode, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
 
@@ -37,6 +37,7 @@ function App() {
   const [subfolder, setSubfolder] = useState('')
   const [confirmUploadOpen, setConfirmUploadOpen] = useState(false)
   const [pendingUpload, setPendingUpload] = useState<{ onlyTaskId?: string } | null>(null)
+  const [logOpen, setLogOpen] = useState(false)
   const cancelRequested = useRef(false)
   const subfolderPrefix = normalizePrefix(subfolder)
 
@@ -239,13 +240,13 @@ function App() {
       <main className="content">
         {page === 'upload' ? (
           <UploadPage
-            config={config} tasks={tasks} logs={logs} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
+            config={config} tasks={tasks} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
             availablePresets={availablePresets} selectedTargets={selectedTargets}
             selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy} folderScanning={folderScanning}
             subfolder={subfolder} onSubfolderChange={setSubfolder}
             completed={completed} failed={failed} totalSize={totalSize} totalProgress={totalProgress}
             onProfileChange={selectProfile} onPresetChange={changePrimaryTarget} onTargetsChange={setSelectedTargetIds} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
-            onUpload={startUpload} onSettings={() => setPage('settings')}
+            onUpload={startUpload} onSettings={() => setPage('settings')} onLogs={() => setLogOpen(true)}
             onRemove={(id) => setTasks((current) => current.filter((item) => item.id !== id))}
             onRetry={(id) => startUpload(id)}
             onClear={() => setTasks((current) => current.filter((item) => !['success', 'skipped'].includes(item.status)))}
@@ -277,6 +278,11 @@ function App() {
             <button type="button" className="secondary" onClick={() => setConfirmUploadOpen(false)}>返回修改</button>
             <button type="button" className="primary" onClick={() => { setConfirmUploadOpen(false); runUpload(pendingUpload?.onlyTaskId) }}><Upload size={16} />确认上传</button>
           </div>
+        </div>
+      </Modal>}
+      {logOpen && <Modal title="运行日志" wide onClose={() => setLogOpen(false)}>
+        <div className="log-viewer">
+          {!logs.length ? <div className="log-empty">等待上传任务</div> : logs.map((log) => <div key={log.id} className={`log-line ${log.level}`}><time>{log.time}</time><span>{log.message}</span></div>)}
         </div>
       </Modal>}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
@@ -393,7 +399,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   }
 
   return <>
-    <header className="page-header"><div><h1>OSS 文件</h1><p>查看整个账号或限定在预设路径下，并下载到本地</p></div><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
+    <header className="page-header"><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
     <div className="browse-mode"><span>查看范围</span><div className="segmented"><button className={mode === 'account' ? 'active' : ''} onClick={() => setMode('account')}>整个账号</button><button className={mode === 'preset' ? 'active' : ''} onClick={() => setMode('preset')}>预设路径</button></div></div>
     {!config.profiles.length ? <div className="empty-setup"><span className="empty-icon"><Cloud size={30} /></span><h2>先配置 OSS 账号</h2><p>配置账号后即可查看 OSS 文件。</p></div> : mode === 'preset' && !preset ? <div className="empty-setup"><span className="empty-icon"><FolderSearch size={30} /></span><h2>暂无可查看路径</h2><p>请在设置中添加一个常用路径，或切换到整个账号模式。</p></div> : <>
       <section className="browse-toolbar">
@@ -409,23 +415,22 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
 }
 
 interface UploadPageProps {
-  config: AppConfig; tasks: UploadTask[]; logs: LogEntry[]; selectedProfileId: string; selectedPresetId: string
+  config: AppConfig; tasks: UploadTask[]; selectedProfileId: string; selectedPresetId: string
   availablePresets: UploadPreset[]; selectedTargets: UploadPreset[]
   selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean; folderScanning: boolean
   subfolder: string; onSubfolderChange: (value: string) => void
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
-  onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
+  onUpload: () => void; onSettings: () => void; onLogs: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
 }
 
 function UploadPage(props: UploadPageProps) {
-  const { config, tasks, logs, selectedPreset, selectedProfile, subfolder, onSubfolderChange } = props
+  const { config, tasks, selectedPreset, selectedProfile, subfolder, onSubfolderChange } = props
   const [showTargetPicker, setShowTargetPicker] = useState(false)
   const subfolderPrefix = normalizePrefix(subfolder)
   return <>
     <header className="page-header">
-      <div><h1>上传中心</h1><p>选择预设路径，添加文件后即可上传</p></div>
-      <button className="icon-button" title="打开设置" onClick={props.onSettings}><Settings size={19} /></button>
+      <button className="icon-button" title="查看运行日志" onClick={props.onLogs}><ScrollText size={19} /></button>
     </header>
 
     {!config.profiles.length ? <div className="empty-setup">
@@ -482,11 +487,6 @@ function UploadPage(props: UploadPageProps) {
         </div>
       </section>
     </>}
-
-    <section className="log-section">
-      <div className="section-heading"><div><h2>运行日志</h2><span>最近 {logs.length} 条</span></div></div>
-      <div className="log-list">{!logs.length ? <div className="log-empty">等待上传任务</div> : logs.slice(0, 6).map((log) => <div key={log.id} className={`log-line ${log.level}`}><time>{log.time}</time><span>{log.message}</span></div>)}</div>
-    </section>
     {showTargetPicker && <TargetPickerModal config={config} primaryId={props.selectedPresetId} selectedIds={props.selectedTargets.map((target) => target.id)} onClose={() => setShowTargetPicker(false)} onSave={(ids) => { props.onTargetsChange(ids); setShowTargetPicker(false) }} />}
   </>
 }
@@ -512,7 +512,6 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
   const newPreset = (): UploadPreset => ({ id: uid(), name: '', description: '', profileId: config.profiles[0]?.id || '', bucket: '', prefix: '', isDefault: !config.presets.length })
 
   return <>
-    <header className="page-header"><div><h1>设置</h1><p>账号凭据只需保存一次，常用路径可重复使用该账号</p></div></header>
     <div className="settings-tabs">
       <button className={tab === 'oss' ? 'active' : ''} onClick={() => setTab('oss')}>账号配置</button>
       <button className={tab === 'paths' ? 'active' : ''} onClick={() => setTab('paths')}>常用路径</button>
