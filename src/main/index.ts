@@ -1,11 +1,11 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage } from 'electron'
-import { promises as fs } from 'node:fs'
-import { createWriteStream } from 'node:fs'
+import { promises as fs, createWriteStream } from 'node:fs'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, DownloadObjectsRequest, ListObjectsRequest, LocalUploadItem, ProfileInput, UploadPreset, UploadRequest } from '../shared/types'
+import type { AppConfig, DownloadObjectsRequest, FolderTreeNode, ListObjectsRequest, LocalUploadItem, ProfileInput, UploadPreset, UploadRequest } from '../shared/types'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -75,22 +75,86 @@ function createClient(profile: StoredProfile, bucket?: string, secretOverride?: 
   })
 }
 
-async function scanFolder(root: string, current = root): Promise<LocalUploadItem[]> {
-  const entries = await fs.readdir(current, { withFileTypes: true })
-  const nested = await Promise.all(entries.map(async (entry) => {
+/**
+ * 递归扫描本地目录，构建目录树（含大小、文件数汇总）。
+ * 供上传中心的文件夹选择弹窗展示，支持多级浏览勾选。
+ */
+async function scanTree(current: string, relative = ''): Promise<FolderTreeNode> {
+  let entries: Dirent[] = []
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true })
+  } catch {
+    // 部分目录可能无权限读取，视为空目录继续扫描
+  }
+  const scanned = await Promise.all(entries.map(async (entry): Promise<FolderTreeNode | null> => {
     const absolutePath = path.join(current, entry.name)
-    if (entry.isDirectory()) return scanFolder(root, absolutePath)
+    const entryRelative = relative ? `${relative}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      const child = await scanTree(absolutePath, entryRelative)
+      return { ...child, name: entry.name, relativePath: entryRelative, absolutePath }
+    }
+    if (entry.isFile()) {
+      const stat = await fs.stat(absolutePath)
+      return { name: entry.name, relativePath: entryRelative, absolutePath, isFolder: false, size: stat.size, fileCount: 1, children: [] }
+    }
+    return null
+  }))
+  const children = scanned.filter((node): node is FolderTreeNode => node !== null)
+  return {
+    name: path.basename(current) || current,
+    relativePath: relative,
+    absolutePath: current,
+    isFolder: true,
+    size: children.reduce((sum, node) => sum + node.size, 0),
+    fileCount: children.reduce((sum, node) => sum + node.fileCount, 0),
+    children
+  }
+}
+
+/** 递归收集单个选中节点（文件或文件夹）下的所有文件，relativePath 从该节点开始，保留层级结构 */
+async function scanSelection(absolute: string, relative: string): Promise<LocalUploadItem[]> {
+  const stat = await fs.stat(absolute)
+  if (!stat.isDirectory()) {
+    return [{ id: randomUUID(), absolutePath: absolute, relativePath: relative, name: path.basename(absolute), size: stat.size }]
+  }
+  let entries
+  try {
+    entries = await fs.readdir(absolute, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const childAbsolute = path.join(absolute, entry.name)
+    const childRelative = relative ? `${relative}/${entry.name}` : entry.name
+    if (entry.isDirectory()) return scanSelection(childAbsolute, childRelative)
     if (!entry.isFile()) return []
-    const stat = await fs.stat(absolutePath)
+    const fileStat = await fs.stat(childAbsolute)
     return [{
       id: randomUUID(),
-      absolutePath,
-      relativePath: path.join(path.basename(root), path.relative(root, absolutePath)).replaceAll('\\', '/'),
+      absolutePath: childAbsolute,
+      relativePath: childRelative,
       name: entry.name,
-      size: stat.size
+      size: fileStat.size
     }]
   }))
   return nested.flat()
+}
+
+/** 把用户勾选的若干节点展开为上传任务列表；若勾选节点存在祖先也被勾选，只取最顶层节点避免重复 */
+async function collectSelection(root: string, selectedPaths: string[]): Promise<LocalUploadItem[]> {
+  const sorted = [...selectedPaths].sort((a, b) => a.split('/').length - b.split('/').length)
+  const topLevel: string[] = []
+  for (const candidate of sorted) {
+    const covered = topLevel.some((ancestor) =>
+      candidate === ancestor || ancestor === '' || candidate.startsWith(`${ancestor}/`))
+    if (covered) continue
+    topLevel.push(candidate)
+  }
+  const items: LocalUploadItem[] = []
+  for (const relativePath of topLevel) {
+    items.push(...await scanSelection(path.join(root, ...relativePath.split('/')), relativePath))
+  }
+  return items
 }
 
 function registerIpc(): void {
@@ -175,11 +239,15 @@ function registerIpc(): void {
     }))
   })
 
-  ipcMain.handle('folder:select', async () => {
-    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-    if (result.canceled || !result.filePaths[0]) return []
-    return scanFolder(result.filePaths[0])
+  ipcMain.handle('folder:pick-root', async () => {
+    const result = await dialog.showOpenDialog({ title: '选择项目根文件夹', properties: ['openDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return null
+    return result.filePaths[0]
   })
+
+  ipcMain.handle('folder:tree', async (_event, root: string) => scanTree(root))
+
+  ipcMain.handle('folder:collect', async (_event, root: string, selectedPaths: string[]) => collectSelection(root, selectedPaths))
 
   ipcMain.handle('clipboard:write', (_event, value: string) => clipboard.writeText(value))
 

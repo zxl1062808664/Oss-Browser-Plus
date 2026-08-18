@@ -38,6 +38,19 @@ export interface LocalUploadItem {
   size: number
 }
 
+export interface FolderTreeNode {
+  name: string
+  /** 相对项目根目录的路径，统一使用 / 分隔，根节点为 '' */
+  relativePath: string
+  absolutePath: string
+  isFolder: boolean
+  /** 文件夹为其下所有文件大小之和 */
+  size: number
+  /** 文件夹为其下所有文件数量之和 */
+  fileCount: number
+  children: FolderTreeNode[]
+}
+
 export interface UploadRequest {
   taskId: string
   absolutePath: string
@@ -89,7 +102,9 @@ export interface DesktopApi {
   savePreferences: (input: Pick<AppConfig, 'concurrentUploads' | 'conflictStrategy'>) => Promise<AppConfig>
   testConnection: (profile: ProfileInput) => Promise<{ ok: boolean; message: string }>
   selectFiles: () => Promise<LocalUploadItem[]>
-  selectFolder: () => Promise<LocalUploadItem[]>
+  pickFolderRoot: () => Promise<string | null>
+  getFolderTree: (root: string) => Promise<FolderTreeNode>
+  collectFolderSelection: (root: string, selectedRelativePaths: string[]) => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
   cancelAllUploads: () => Promise<{ cancelled: number }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>

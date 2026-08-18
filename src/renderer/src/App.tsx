@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowUp, Check, ChevronDown, CircleStop, Clipboard, Cloud, Download, FileUp, FileText, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
+  ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Download, FileUp, FileText, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
   ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, Settings, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
+import type { AppConfig, FolderTreeNode, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
@@ -32,6 +32,8 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState('')
+  const [folderPicker, setFolderPicker] = useState<{ root: string; tree: FolderTreeNode } | null>(null)
+  const [folderScanning, setFolderScanning] = useState(false)
   const cancelRequested = useRef(false)
 
   const selectedProfile = config.profiles.find((item) => item.id === selectedProfileId)
@@ -74,7 +76,31 @@ function App() {
   }
 
   const selectFiles = async () => addItems(await window.desktopApi.selectFiles())
-  const selectFolder = async () => addItems(await window.desktopApi.selectFolder())
+
+  const selectFolder = async () => {
+    const root = await window.desktopApi.pickFolderRoot()
+    if (!root) return
+    setFolderScanning(true)
+    try {
+      const tree = await window.desktopApi.getFolderTree(root)
+      setFolderPicker({ root, tree })
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '读取文件夹失败')
+    } finally {
+      setFolderScanning(false)
+    }
+  }
+
+  const confirmFolderSelection = async (selectedPaths: string[]) => {
+    if (!folderPicker) return
+    try {
+      const items = await window.desktopApi.collectFolderSelection(folderPicker.root, selectedPaths)
+      addItems(items)
+      setFolderPicker(null)
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '收集选中文件失败')
+    }
+  }
 
   const startUpload = async (onlyTaskId?: string) => {
     if (!selectedTargets.length) return notify('请至少选择一个上传目标')
@@ -200,7 +226,7 @@ function App() {
           <UploadPage
             config={config} tasks={tasks} logs={logs} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
             availablePresets={availablePresets} selectedTargets={selectedTargets}
-            selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy}
+            selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy} folderScanning={folderScanning}
             completed={completed} failed={failed} totalSize={totalSize} totalProgress={totalProgress}
             onProfileChange={selectProfile} onPresetChange={changePrimaryTarget} onTargetsChange={setSelectedTargetIds} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
             onUpload={startUpload} onSettings={() => setPage('settings')}
@@ -215,6 +241,13 @@ function App() {
           <SettingsPage config={config} onChange={applyConfig} />
         )}
       </main>
+      {folderPicker && <FolderPickerModal
+        root={folderPicker.root}
+        tree={folderPicker.tree}
+        preset={selectedPreset}
+        onClose={() => setFolderPicker(null)}
+        onConfirm={confirmFolderSelection}
+      />}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
     </div>
   )
@@ -347,7 +380,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
 interface UploadPageProps {
   config: AppConfig; tasks: UploadTask[]; logs: LogEntry[]; selectedProfileId: string; selectedPresetId: string
   availablePresets: UploadPreset[]; selectedTargets: UploadPreset[]
-  selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean
+  selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean; folderScanning: boolean
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
   onUpload: () => void; onSettings: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
@@ -388,7 +421,7 @@ function UploadPage(props: UploadPageProps) {
       <section className="actions-row">
         <div className="add-actions">
           <button className="secondary" onClick={props.onFiles}><FileUp size={18} />选择文件</button>
-          <button className="secondary" onClick={props.onFolder}><FolderOpen size={18} />选择文件夹</button>
+          <button className="secondary" disabled={props.folderScanning} onClick={props.onFolder} title="选择项目根文件夹后，勾选其中要上传的版本/子文件夹">{props.folderScanning ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={18} />}{props.folderScanning ? '读取目录中...' : '选择文件夹'}</button>
         </div>
         <button className="primary upload-button" disabled={props.busy || !tasks.some((task) => task.status === 'waiting' || task.status === 'failed')} onClick={() => props.onUpload()}>
           {props.busy ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}{props.busy ? '正在上传' : '开始上传'}
@@ -532,8 +565,8 @@ function TargetPickerModal({ config, primaryId, selectedIds, onClose, onSave }: 
   </Modal>
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><div className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-button" title="关闭" onClick={onClose}><X size={19} /></button></div>{children}</div></div>
+function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><div className={`modal${wide ? ' wide' : ''}`}><div className="modal-header"><h2>{title}</h2><button className="icon-button" title="关闭" onClick={onClose}><X size={19} /></button></div>{children}</div></div>
 }
 
 function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) {
@@ -542,6 +575,178 @@ function Field({ label, wide, children }: { label: string; wide?: boolean; child
 
 function SettingsEmpty({ title, text }: { title: string; text: string }) {
   return <div className="settings-empty"><Cloud size={25} /><strong>{title}</strong><span>{text}</span></div>
+}
+
+function FolderPickerModal({ root, tree, preset, onClose, onConfirm }: {
+  root: string
+  tree: FolderTreeNode
+  preset?: UploadPreset
+  onClose: () => void
+  onConfirm: (selectedPaths: string[]) => void | Promise<void>
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([tree.relativePath]))
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [submitting, setSubmitting] = useState(false)
+
+  const toggleExpand = (relativePath: string) => {
+    setExpanded((current) => {
+      const next = new Set(current)
+      if (next.has(relativePath)) next.delete(relativePath)
+      else next.add(relativePath)
+      return next
+    })
+  }
+
+  const expandAll = () => {
+    const all: string[] = []
+    const walk = (node: FolderTreeNode) => {
+      if (node.isFolder) all.push(node.relativePath)
+      node.children.forEach(walk)
+    }
+    walk(tree)
+    setExpanded(new Set(all))
+  }
+
+  const collapseAll = () => setExpanded(new Set([tree.relativePath]))
+
+  const toggleCheck = (node: FolderTreeNode) => {
+    const isChecked = checked.has(node.relativePath)
+    setChecked((current) => {
+      const next = new Set(current)
+      const affected: string[] = [node.relativePath]
+      const walk = (item: FolderTreeNode) => {
+        item.children.forEach((child) => { affected.push(child.relativePath); walk(child) })
+      }
+      walk(node)
+      affected.forEach((relativePath) => { if (isChecked) next.delete(relativePath); else next.add(relativePath) })
+      return next
+    })
+  }
+
+  const selectAll = () => {
+    const all: string[] = []
+    const walk = (node: FolderTreeNode) => {
+      all.push(node.relativePath)
+      node.children.forEach(walk)
+    }
+    walk(tree)
+    setChecked(new Set(all))
+  }
+
+  const clearAll = () => setChecked(new Set())
+
+  const summary = useMemo(() => {
+    // 只统计最顶层勾选节点（其祖先未被勾选；根节点 '' 视为包含整棵树），避免重复统计
+    const sorted = [...checked].sort((a, b) => a.split('/').length - b.split('/').length)
+    const topLevel: string[] = []
+    for (const candidate of sorted) {
+      const covered = topLevel.some((ancestor) =>
+        candidate === ancestor || ancestor === '' || candidate.startsWith(`${ancestor}/`))
+      if (covered) continue
+      topLevel.push(candidate)
+    }
+    const findNode = (node: FolderTreeNode, relativePath: string): FolderTreeNode | undefined => {
+      if (node.relativePath === relativePath) return node
+      for (const child of node.children) {
+        const found = findNode(child, relativePath)
+        if (found) return found
+      }
+      return undefined
+    }
+    let fileCount = 0
+    let size = 0
+    const folderNames: string[] = []
+    for (const relativePath of topLevel) {
+      const node = findNode(tree, relativePath)
+      if (!node) continue
+      fileCount += node.fileCount
+      size += node.size
+      if (node.relativePath) folderNames.push(node.relativePath)
+    }
+    return { fileCount, size, folderNames }
+  }, [checked, tree])
+
+  const handleConfirm = async () => {
+    if (!summary.fileCount || submitting) return
+    setSubmitting(true)
+    try {
+      await onConfirm([...checked])
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return <Modal title="选择要上传的文件夹" wide onClose={onClose}>
+    <div className="folder-picker">
+      <p className="folder-picker-hint">已读取本地项目根目录，勾选其中要上传的版本 / 子文件夹（可多选）。上传到 OSS 后会按 <b>版本名 / 子目录</b> 的结构保留层级，例如 <code>v1.0/build/app.zip</code>。</p>
+      <div className="folder-picker-toolbar">
+        <span className="folder-root" title={root}>{root}</span>
+        <div className="folder-toolbar-actions">
+          <button className="text-button" onClick={expandAll}>展开全部</button>
+          <button className="text-button" onClick={collapseAll}>折叠全部</button>
+          <button className="text-button" onClick={selectAll}>全选</button>
+          <button className="text-button" onClick={clearAll}>清空</button>
+        </div>
+      </div>
+      <div className="folder-tree">
+        <FolderTreeBranch node={tree} depth={0} expanded={expanded} checked={checked} onToggleExpand={toggleExpand} onToggleCheck={toggleCheck} />
+      </div>
+      <div className="folder-picker-footer">
+        <span className="folder-selected">{summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '未勾选任何内容'}</span>
+        <span className="folder-preview" title={preset ? `${fullPath(preset)}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
+          ? `OSS 目标：${fullPath(preset)}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
+          : `OSS 目标：${fullPath(preset)}`) : '未选择上传路径'}</span>
+        <button className="secondary" onClick={onClose}>取消</button>
+        <button className="primary" disabled={!summary.fileCount || submitting} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${summary.fileCount} 个文件`}</button>
+      </div>
+    </div>
+  </Modal>
+}
+
+function FolderTreeBranch({ node, depth, expanded, checked, onToggleExpand, onToggleCheck }: {
+  node: FolderTreeNode
+  depth: number
+  expanded: Set<string>
+  checked: Set<string>
+  onToggleExpand: (relativePath: string) => void
+  onToggleCheck: (node: FolderTreeNode) => void
+}) {
+  const hasChildren = node.children.length > 0
+  const isExpanded = expanded.has(node.relativePath)
+  const isChecked = checked.has(node.relativePath)
+  let partChecked = false
+  if (!isChecked) {
+    const hasCheckedDescendant = (item: FolderTreeNode): boolean =>
+      checked.has(item.relativePath) || item.children.some(hasCheckedDescendant)
+    partChecked = node.children.some(hasCheckedDescendant)
+  }
+  return <>
+    <div className="tree-row" style={{ paddingLeft: `${9 + depth * 22}px` }}>
+      <button
+        type="button"
+        className={`tree-expander${hasChildren ? '' : ' leaf'}${isExpanded ? ' open' : ''}`}
+        disabled={!hasChildren}
+        title={hasChildren ? (isExpanded ? '折叠' : '展开') : undefined}
+        onClick={() => onToggleExpand(node.relativePath)}
+      >
+        {hasChildren ? <ChevronRight size={13} /> : <span className="tree-leaf-dot" />}
+      </button>
+      <input
+        type="checkbox"
+        aria-label={`选择 ${node.relativePath || node.name}`}
+        checked={isChecked}
+        ref={(el) => { if (el) el.indeterminate = partChecked }}
+        onChange={() => onToggleCheck(node)}
+      />
+      {node.isFolder ? <FolderOpen size={16} /> : <FileText size={16} />}
+      <span className="tree-name" title={node.relativePath}>{node.name || '根目录'}</span>
+      <span className="tree-meta">{node.isFolder ? `${node.fileCount} 项` : formatBytes(node.size)}</span>
+      <span className="tree-size">{node.isFolder ? formatBytes(node.size) : ''}</span>
+    </div>
+    {hasChildren && isExpanded && node.children.map((child) => (
+      <FolderTreeBranch key={child.relativePath} node={child} depth={depth + 1} expanded={expanded} checked={checked} onToggleExpand={onToggleExpand} onToggleCheck={onToggleCheck} />
+    ))}
+  </>
 }
 
 export default App
