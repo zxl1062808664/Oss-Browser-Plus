@@ -10,7 +10,7 @@ type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | '
 type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string; targetPresetId?: string }
 type LogEntry = { id: string; time: string; level: 'info' | 'success' | 'error'; message: string }
 
-const emptyConfig: AppConfig = { profiles: [], presets: [], concurrentUploads: 3, conflictStrategy: 'overwrite' }
+const emptyConfig: AppConfig = { profiles: [], presets: [], categories: [], concurrentUploads: 3, conflictStrategy: 'overwrite' }
 const uid = () => crypto.randomUUID()
 const now = () => new Date().toLocaleTimeString('zh-CN', { hour12: false })
 const formatBytes = (bytes: number) => {
@@ -318,12 +318,19 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     { label: '有效期：7 天', value: 604800 }
   ]
   const profile = config.profiles.find((item) => item.id === profileId)
-  const presets = config.presets.filter((item) => item.profileId === profileId)
+  const [presetCategoryId, setPresetCategoryId] = useState('')
+  const accountPresets = config.presets.filter((item) => item.profileId === profileId)
+  const presets = presetCategoryId ? accountPresets.filter((item) => item.categoryId === presetCategoryId) : accountPresets
   const preset = config.presets.find((item) => item.id === presetId && item.profileId === profileId)
   const rootPrefix = mode === 'preset' ? normalizePrefix(preset?.prefix || '') : ''
   const bucketName = mode === 'account' ? selectedBucket : preset?.bucket || ''
   const bucketRegion = mode === 'account' ? buckets.find((item) => item.name === selectedBucket)?.region : undefined
   const atBucketList = mode === 'account' && !selectedBucket
+  const changePresetCategory = (value: string) => {
+    setPresetCategoryId(value)
+    const list = value ? accountPresets.filter((item) => item.categoryId === value) : accountPresets
+    if (!list.some((item) => item.id === presetId) && list.length) setPresetId(list[0].id)
+  }
 
   useEffect(() => {
     if (!profileId && config.profiles.length) setProfileId(config.profiles.find((item) => item.isDefault)?.id || config.profiles[0].id)
@@ -564,9 +571,12 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     <header className="page-header"><div className="header-btn-wrap"><button className="icon-button" title="查看上传进度" onClick={() => setUploadOpen(true)}><Upload size={19} /></button>{uploadQueue.some((item) => item.status === 'waiting' || item.status === 'uploading') && <span className="upload-badge">{uploadQueue.filter((item) => item.status === 'waiting' || item.status === 'uploading').length}</span>}</div><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
     <div className="browse-mode"><span>查看范围</span><div className="segmented"><button className={mode === 'account' ? 'active' : ''} onClick={() => setMode('account')}>整个账号</button><button className={mode === 'preset' ? 'active' : ''} onClick={() => setMode('preset')}>预设路径</button></div></div>
     {!config.profiles.length ? <div className="empty-setup"><span className="empty-icon"><Cloud size={30} /></span><h2>先配置 OSS 账号</h2><p>配置账号后即可查看 OSS 文件。</p></div> : mode === 'preset' && !preset ? <div className="empty-setup"><span className="empty-icon"><FolderSearch size={30} /></span><h2>暂无可查看路径</h2><p>请在设置中添加一个常用路径，或切换到整个账号模式。</p></div> : <>
-      <section className="browse-toolbar">
+      <section className={`browse-toolbar${mode === 'preset' ? ' four' : ''}`}>
         <div className="browse-field"><label htmlFor="browse-profile">OSS 账号</label><div className="select-wrap"><select id="browse-profile" value={profileId} onChange={(event) => setProfileId(event.target.value)}>{config.profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><ChevronDown size={16} /></div></div>
-        {mode === 'preset' ? <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>)}</select><ChevronDown size={16} /></div></div> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
+        {mode === 'preset' ? <>
+          <div className="browse-field"><label htmlFor="browse-category">分类</label><div className="select-wrap"><select id="browse-category" value={presetCategoryId} onChange={(event) => changePresetCategory(event.target.value)}><option value="">全部分类</option>{config.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><ChevronDown size={16} /></div></div>
+          <div className="browse-field"><label htmlFor="browse-preset">预设路径</label><div className="select-wrap"><select id="browse-preset" value={presetId} onChange={(event) => setPresetId(event.target.value)}>{presets.length ? presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.description ? ` · ${item.description}` : ''}</option>) : <option value="">{presetCategoryId ? '该分类暂无路径' : '暂无路径'}</option>}</select><ChevronDown size={16} /></div></div>
+        </> : <div className="browse-field"><label>当前 Bucket</label><div className="browse-scope-value">{selectedBucket || `全部 Bucket（${buckets.length}）`}</div></div>}
         <div className="browse-path"><span>{atBucketList ? 'oss://' : `oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`}</span><button className="icon-button small" disabled={atBucketList} title="复制当前路径" onClick={copyBrowsePath}><Clipboard size={16} /></button></div>
       </section>
       {!atBucketList && <div className="browse-upload-bar">
@@ -644,7 +654,14 @@ interface UploadPageProps {
 function UploadPage(props: UploadPageProps) {
   const { config, tasks, selectedPreset, selectedProfile, subfolder, onSubfolderChange } = props
   const [showTargetPicker, setShowTargetPicker] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState('')
   const subfolderPrefix = normalizePrefix(subfolder)
+  const filteredPresets = categoryFilter ? props.availablePresets.filter((preset) => preset.categoryId === categoryFilter) : props.availablePresets
+  const changeCategoryFilter = (value: string) => {
+    setCategoryFilter(value)
+    const list = value ? props.availablePresets.filter((preset) => preset.categoryId === value) : props.availablePresets
+    if (!list.some((preset) => preset.id === props.selectedPresetId) && list.length) props.onPresetChange(list[0].id)
+  }
   return <>
     <header className="page-header">
       <button className="icon-button" title="查看运行日志" onClick={props.onLogs}><ScrollText size={19} /></button>
@@ -661,8 +678,12 @@ function UploadPage(props: UploadPageProps) {
           <div className="select-wrap"><select id="profile-target" disabled={props.busy} value={props.selectedProfileId} onChange={(event) => props.onProfileChange(event.target.value)}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><ChevronDown size={16} /></div>
         </div>
         <div className="target-selector">
+          <label htmlFor="category-target">分类</label>
+          <div className="select-wrap"><select id="category-target" disabled={props.busy || !config.categories.length} value={categoryFilter} onChange={(event) => changeCategoryFilter(event.target.value)}><option value="">全部分类</option>{config.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select><ChevronDown size={16} /></div>
+        </div>
+        <div className="target-selector">
           <label htmlFor="path-target">上传路径</label>
-          <div className="select-wrap"><select id="path-target" disabled={props.busy || !props.availablePresets.length} value={props.selectedPresetId} onChange={(event) => props.onPresetChange(event.target.value)}>{props.availablePresets.length ? props.availablePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}{preset.description ? ` · ${preset.description}` : ''}</option>) : <option value="">该账号暂无上传路径</option>}</select><ChevronDown size={16} /></div>
+          <div className="select-wrap"><select id="path-target" disabled={props.busy || !props.availablePresets.length} value={props.selectedPresetId} onChange={(event) => props.onPresetChange(event.target.value)}>{filteredPresets.length ? filteredPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}{preset.description ? ` · ${preset.description}` : ''}</option>) : <option value="">{categoryFilter ? (props.availablePresets.length ? '该分类暂无路径' : '该账号暂无上传路径') : '该账号暂无上传路径'}</option>}</select><ChevronDown size={16} /></div>
         </div>
         <div className="path-field"><label>路径预览</label><div className={`path-preview ${selectedPreset ? '' : 'empty'}`}><span>{selectedPreset ? `${fullPath(selectedPreset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}` : '请前往设置为该账号添加路径'}</span><button className="icon-button small" disabled={!selectedPreset} title="复制 OSS 路径" onClick={props.onCopy}><Clipboard size={17} /></button></div></div>
       </section>
@@ -721,17 +742,31 @@ function TaskRow({ task, busy, onRetry, onRemove }: { task: UploadTask; busy: bo
 }
 
 function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (config: AppConfig) => void }) {
-  const [tab, setTab] = useState<'oss' | 'paths' | 'upload'>('oss')
+  const [tab, setTab] = useState<'oss' | 'paths' | 'categories' | 'upload'>('oss')
   const [profileForm, setProfileForm] = useState<ProfileInput | null>(null)
   const [presetForm, setPresetForm] = useState<UploadPreset | null>(null)
   const [message, setMessage] = useState('')
+  const [pathProfileId, setPathProfileId] = useState(config.profiles[0]?.id || '')
+  const [categoryName, setCategoryName] = useState('')
+  const effectivePathProfileId = config.profiles.some((profile) => profile.id === pathProfileId) ? pathProfileId : (config.profiles[0]?.id || '')
+  useEffect(() => {
+    if (pathProfileId !== effectivePathProfileId) setPathProfileId(effectivePathProfileId)
+  }, [pathProfileId, effectivePathProfileId])
+  const accountPresets = config.presets.filter((preset) => preset.profileId === effectivePathProfileId)
+  const categoryNameOf = (categoryId?: string) => config.categories.find((category) => category.id === categoryId)?.name
+  const addCategory = async () => {
+    if (!categoryName.trim()) return
+    onChange(await window.desktopApi.saveCategory({ id: uid(), name: categoryName.trim() }))
+    setCategoryName('')
+  }
   const newProfile = (): ProfileInput => ({ id: uid(), name: '', endpoint: '', region: '', accessKeyId: '', accessKeySecret: '', hasSecret: false, isDefault: !config.profiles.length })
-  const newPreset = (): UploadPreset => ({ id: uid(), name: '', description: '', profileId: config.profiles[0]?.id || '', bucket: '', prefix: '', isDefault: !config.presets.length })
+  const newPreset = (): UploadPreset => ({ id: uid(), name: '', description: '', profileId: effectivePathProfileId, bucket: '', prefix: '', isDefault: !config.presets.length })
 
   return <>
     <div className="settings-tabs">
       <button className={tab === 'oss' ? 'active' : ''} onClick={() => setTab('oss')}>账号配置</button>
       <button className={tab === 'paths' ? 'active' : ''} onClick={() => setTab('paths')}>常用路径</button>
+      <button className={tab === 'categories' ? 'active' : ''} onClick={() => setTab('categories')}>路径分类</button>
       <button className={tab === 'upload' ? 'active' : ''} onClick={() => setTab('upload')}>上传设置</button>
     </div>
 
@@ -746,13 +781,37 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
     </section>}
 
     {tab === 'paths' && <section className="settings-section">
-      <div className="section-heading"><div><h2>常用路径</h2><span>路径会直接使用已保存的账号，不需要重复填写凭据</span></div><button className="primary compact" disabled={!config.profiles.length} onClick={() => setPresetForm(newPreset())}><Plus size={17} />添加路径</button></div>
-      {!config.presets.length ? <SettingsEmpty title="还没有常用路径" text={config.profiles.length ? '只需填写 Bucket 和目录前缀，不会再次要求 AccessKey。' : '请先添加一个 OSS 账号。'} /> : <div className="config-list">{config.presets.map((preset) => <div className="config-row" key={preset.id}>
-        <span className="config-icon path"><FolderOpen size={20} /></span><div className="config-main"><div><strong>{preset.name}</strong>{preset.isDefault && <em>默认</em>}</div>{preset.description && <small>{preset.description}</small>}<span>{fullPath(preset)}</span></div>
-        <span className="profile-name">{config.profiles.find((item) => item.id === preset.profileId)?.name}</span>
-        <button className="icon-button small" title="编辑" onClick={() => setPresetForm(preset)}><Pencil size={16} /></button>
-        <button className="icon-button small danger" title="删除" onClick={async () => onChange(await window.desktopApi.deletePreset(preset.id))}><Trash2 size={16} /></button>
-      </div>)}</div>}
+      <div className="section-heading"><div><h2>常用路径</h2><span>按账号分组管理，先选择账号再显示该账号下的路径</span></div><button className="primary compact" disabled={!config.profiles.length} onClick={() => setPresetForm(newPreset())}><Plus size={17} />添加路径</button></div>
+      {!config.profiles.length ? <SettingsEmpty title="还没有 OSS 账号" text="请先在“账号配置”中添加账号。" /> : <>
+        <div className="path-filter">
+          <label htmlFor="path-profile-filter">选择账号</label>
+          <div className="select-wrap"><select id="path-profile-filter" value={effectivePathProfileId} onChange={(event) => setPathProfileId(event.target.value)}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><ChevronDown size={16} /></div>
+          <span className="path-count">{accountPresets.length} 条路径</span>
+        </div>
+        {!accountPresets.length ? <SettingsEmpty title="该账号下还没有常用路径" text="点击右上角“添加路径”，为当前账号配置常用路径。" /> : <div className="config-list">{accountPresets.map((preset) => <div className="config-row" key={preset.id}>
+          <span className="config-icon path"><FolderOpen size={20} /></span><div className="config-main"><div><strong>{preset.name}</strong>{preset.isDefault && <em>默认</em>}{categoryNameOf(preset.categoryId) && <em className="category-tag">{categoryNameOf(preset.categoryId)}</em>}</div>{preset.description && <small>{preset.description}</small>}<span>{fullPath(preset)}</span></div>
+          <span className="profile-name">{config.profiles.find((item) => item.id === preset.profileId)?.name}</span>
+          <button className="icon-button small" title="编辑" onClick={() => setPresetForm(preset)}><Pencil size={16} /></button>
+          <button className="icon-button small danger" title="删除" onClick={async () => onChange(await window.desktopApi.deletePreset(preset.id))}><Trash2 size={16} /></button>
+        </div>)}</div>}
+      </>}
+    </section>}
+
+    {tab === 'categories' && <section className="settings-section">
+      <div className="section-heading"><div><h2>路径分类</h2><span>自定义分类，可在“上传中心”和“OSS 文件”中按分类筛选常用路径</span></div></div>
+      <div className="category-add">
+        <input value={categoryName} placeholder="输入分类名称，例如：正式发布 / 测试环境" onChange={(event) => setCategoryName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && categoryName.trim()) addCategory() }} />
+        <button className="primary compact" disabled={!categoryName.trim()} onClick={addCategory}><Plus size={16} />添加分类</button>
+      </div>
+      {!config.categories.length ? <SettingsEmpty title="还没有路径分类" text="添加分类后，可在上传中心与 OSS 文件中按分类筛选常用路径。" /> : <div className="config-list">{config.categories.map((category) => {
+        const count = config.presets.filter((preset) => preset.categoryId === category.id).length
+        return <div className="config-row" key={category.id}>
+          <span className="config-icon path"><FolderSearch size={20} /></span>
+          <div className="config-main"><div><strong>{category.name}</strong><em className="category-tag">分类</em></div><span>{count} 个常用路径</span></div>
+          <span className="profile-name">路径分类</span>
+          <button className="icon-button small danger" title="删除分类" onClick={async () => { if (window.confirm(`删除分类“${category.name}”？其下 ${count} 个常用路径将变为未分类。`)) onChange(await window.desktopApi.deleteCategory(category.id)) }}><Trash2 size={16} /></button>
+        </div>
+      })}</div>}
     </section>}
 
     {tab === 'upload' && <UploadPreferences config={config} onChange={onChange} />}
@@ -779,6 +838,7 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
           {config.profiles.length > 1 ? <Field label="使用账号"><select required value={presetForm.profileId} onChange={(e) => setPresetForm({ ...presetForm, profileId: e.target.value })}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></Field> : <Field label="使用账号"><div className="account-reference"><Check size={15} />{config.profiles[0]?.name}</div></Field>}
           <Field label="Bucket"><input required value={presetForm.bucket} placeholder="my-bucket" onChange={(e) => setPresetForm({ ...presetForm, bucket: e.target.value })} /></Field>
           <Field label="目录前缀"><input value={presetForm.prefix} placeholder="releases/windows" onChange={(e) => setPresetForm({ ...presetForm, prefix: e.target.value })} /></Field>
+          <Field label="分类"><select value={presetForm.categoryId || ''} onChange={(e) => setPresetForm({ ...presetForm, categoryId: e.target.value || undefined })}><option value="">未分类</option>{config.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></Field>
           <Field label="路径备注（仅用于显示）" wide><input value={presetForm.description || ''} placeholder="例如：桌面客户端正式版本发布" onChange={(e) => setPresetForm({ ...presetForm, description: e.target.value })} /></Field>
         </div>
         <div className="path-callout"><span>完整路径</span><strong>{fullPath(presetForm)}</strong></div>

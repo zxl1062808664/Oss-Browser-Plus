@@ -8,10 +8,10 @@ import type { AppConfig, FolderTreeNode } from '../../shared/types'
 if (!window.desktopApi) {
   const demoProfile = { id: 'demo-profile', name: '演示环境', endpoint: 'oss-cn-hangzhou.aliyuncs.com', region: 'oss-cn-hangzhou', accessKeyId: 'preview-only', hasSecret: true, isDefault: true }
   const backupProfile = { id: 'backup-profile', name: '备份账号', endpoint: 'oss-cn-shanghai.aliyuncs.com', region: 'oss-cn-shanghai', accessKeyId: 'preview-only', hasSecret: true, isDefault: false }
-  const demoPreset = { id: 'demo-preset', name: '产品发布包', description: '桌面客户端正式版本发布', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/desktop', isDefault: true }
+  const demoPreset = { id: 'demo-preset', name: '产品发布包', description: '桌面客户端正式版本发布', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/desktop', isDefault: true, categoryId: 'cat-release' }
   const testPreset = { id: 'test-preset', name: '测试构建', description: '内测人员下载使用', profileId: demoProfile.id, bucket: 'demo-bucket', prefix: 'releases/beta', isDefault: false }
   const backupPreset = { id: 'backup-preset', name: '异地备份', description: '上海节点灾备副本', profileId: backupProfile.id, bucket: 'backup-bucket', prefix: 'archive/desktop', isDefault: false }
-  let previewConfig: AppConfig = { profiles: [demoProfile, backupProfile], presets: [demoPreset, testPreset, backupPreset], concurrentUploads: 3, conflictStrategy: 'overwrite' }
+  let previewConfig: AppConfig = { profiles: [demoProfile, backupProfile], presets: [demoPreset, testPreset, backupPreset], categories: [{ id: 'cat-release', name: '正式发布' }], concurrentUploads: 3, conflictStrategy: 'overwrite' }
   let previewFailureInjected = false
   window.desktopApi = {
     getConfig: async () => previewConfig,
@@ -19,6 +19,8 @@ if (!window.desktopApi) {
     deleteProfile: async (id) => { previewConfig = { ...previewConfig, profiles: previewConfig.profiles.filter((item) => item.id !== id) }; return previewConfig },
     savePreset: async (preset) => { previewConfig = { ...previewConfig, presets: [...previewConfig.presets.filter((item) => item.id !== preset.id), preset] }; return previewConfig },
     deletePreset: async (id) => { previewConfig = { ...previewConfig, presets: previewConfig.presets.filter((item) => item.id !== id) }; return previewConfig },
+    saveCategory: async (category) => { previewConfig = { ...previewConfig, categories: [...previewConfig.categories.filter((item) => item.id !== category.id), category] }; return previewConfig },
+    deleteCategory: async (id) => { previewConfig = { ...previewConfig, categories: previewConfig.categories.filter((item) => item.id !== id), presets: previewConfig.presets.map((preset) => preset.categoryId === id ? { ...preset, categoryId: undefined } : preset) }; return previewConfig },
     savePreferences: async (input) => { previewConfig = { ...previewConfig, ...input }; return previewConfig },
     testConnection: async () => ({ ok: true, message: '演示模式：连接测试通过' }),
     selectFiles: async () => Array.from({ length: 12 }, (_, index) => ({ id: crypto.randomUUID(), absolutePath: `C:/preview/package-${index + 1}.zip`, relativePath: `release/package-${index + 1}.zip`, name: `package-${index + 1}.zip`, size: (index + 1) * 1024 * 1024 })),

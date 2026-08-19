@@ -5,7 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsRequest, LocalUploadItem, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
+import type { AppConfig, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsRequest, LocalUploadItem, PathCategory, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -14,6 +14,7 @@ interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecre
 interface StoredConfig {
   profiles: StoredProfile[]
   presets: UploadPreset[]
+  categories: PathCategory[]
   concurrentUploads: number
   conflictStrategy: 'overwrite' | 'skip'
 }
@@ -21,6 +22,7 @@ interface StoredConfig {
 const defaultConfig: StoredConfig = {
   profiles: [],
   presets: [],
+  categories: [],
   concurrentUploads: 3,
   conflictStrategy: 'overwrite'
 }
@@ -257,6 +259,26 @@ function registerIpc(): void {
     const config = await readConfig()
     config.presets = config.presets.filter((preset) => preset.id !== id)
     if (config.presets.length && !config.presets.some((preset) => preset.isDefault)) config.presets[0].isDefault = true
+    await writeConfig(config)
+    return publicConfig(config)
+  })
+
+  ipcMain.handle('config:save-category', async (_event, input: PathCategory) => {
+    const config = await readConfig()
+    const name = input.name.trim()
+    if (!name) throw new Error('分类名称不能为空')
+    const category: PathCategory = { id: input.id, name }
+    const index = config.categories.findIndex((item) => item.id === category.id)
+    if (index >= 0) config.categories[index] = category
+    else config.categories.push(category)
+    await writeConfig(config)
+    return publicConfig(config)
+  })
+
+  ipcMain.handle('config:delete-category', async (_event, id: string) => {
+    const config = await readConfig()
+    config.categories = config.categories.filter((item) => item.id !== id)
+    config.presets.forEach((preset) => { if (preset.categoryId === id) preset.categoryId = undefined })
     await writeConfig(config)
     return publicConfig(config)
   })

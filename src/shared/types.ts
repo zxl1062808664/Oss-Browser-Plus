@@ -8,6 +8,11 @@ export interface OssProfile {
   isDefault: boolean
 }
 
+export interface PathCategory {
+  id: string
+  name: string
+}
+
 export interface UploadPreset {
   id: string
   name: string
@@ -16,11 +21,13 @@ export interface UploadPreset {
   bucket: string
   prefix: string
   isDefault: boolean
+  categoryId?: string
 }
 
 export interface AppConfig {
   profiles: OssProfile[]
   presets: UploadPreset[]
+  categories: PathCategory[]
   concurrentUploads: number
   conflictStrategy: 'overwrite' | 'skip'
 }
@@ -131,6 +138,8 @@ export interface DesktopApi {
   deleteProfile: (id: string) => Promise<AppConfig>
   savePreset: (preset: UploadPreset) => Promise<AppConfig>
   deletePreset: (id: string) => Promise<AppConfig>
+  saveCategory: (category: PathCategory) => Promise<AppConfig>
+  deleteCategory: (id: string) => Promise<AppConfig>
   savePreferences: (input: Pick<AppConfig, 'concurrentUploads' | 'conflictStrategy'>) => Promise<AppConfig>
   testConnection: (profile: ProfileInput) => Promise<{ ok: boolean; message: string }>
   selectFiles: () => Promise<LocalUploadItem[]>

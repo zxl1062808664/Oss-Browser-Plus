@@ -42,7 +42,7 @@ h1, h2, p { margin: 0; }
 .icon-button.danger:hover { color: var(--red); border-color: #e7b5b5; background: #fff7f7; }
 .icon-button:disabled { opacity: .45; cursor: not-allowed; }
 
-.target-band { display: grid; grid-template-columns: minmax(160px, .8fr) minmax(180px, 1fr) minmax(280px, 1.6fr); align-items: end; gap: 18px; padding: 13px 20px; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
+.target-band { display: grid; grid-template-columns: minmax(150px, .75fr) minmax(120px, .6fr) minmax(170px, .85fr) minmax(250px, 1.4fr); align-items: end; gap: 18px; padding: 13px 20px; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
 .target-selector label, .path-field > label { display: block; margin-bottom: 7px; color: #4f5b69; font-size: 12px; font-weight: 600; }
 .select-wrap { position: relative; }
 .select-wrap select { width: 100%; height: 39px; padding: 0 34px 0 11px; appearance: none; border: 1px solid #cdd5df; border-radius: 5px; color: #1c2734; background: #fff; font-weight: 600; }
@@ -198,6 +198,14 @@ h1, h2, p { margin: 0; }
 .path-callout { display: grid; gap: 5px; padding: 10px 12px; margin-top: 15px; background: #f2f6fa; border-radius: 5px; }
 .path-callout span { color: #748191; font-size: 10px; }
 .path-callout strong { overflow: hidden; color: #3a4b5f; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.path-filter { display: flex; align-items: center; gap: 12px; margin: 13px 0 12px; }
+.path-filter > label { flex: none; color: #4f5b69; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.path-filter .select-wrap { width: 260px; }
+.path-count { color: #7b8794; font-size: 11px; }
+.category-add { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
+.category-add > input { width: 340px; height: 36px; padding: 0 11px; border: 1px solid #cdd5df; border-radius: 5px; color: #202c3a; background: #fff; font-size: 12px; }
+.category-add > input:focus { outline: 2px solid #8bb8f8; outline-offset: 1px; }
+.config-main em.category-tag { margin-left: 6px; padding: 2px 6px; color: #0f6d55; background: #e6f5f0; border-radius: 3px; font-size: 9px; font-style: normal; }
 .test-message { padding: 8px 10px; margin-top: 13px; color: #a23d3d; background: #fff1f1; border-radius: 4px; font-size: 11px; }
 .test-message.ok { color: #147052; background: #e9f7f2; }
 .modal-actions { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; padding-top: 20px; margin-top: 19px; border-top: 1px solid #e6eaee; }
@@ -252,6 +260,7 @@ h1, h2, p { margin: 0; }
 .browse-mode { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .browse-mode > span { color: #4f5b69; font-size: 12px; font-weight: 600; }
 .browse-toolbar { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(200px, 1fr) minmax(280px, 1.5fr); align-items: end; gap: 15px; padding: 13px 19px; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
+.browse-toolbar.four { grid-template-columns: minmax(150px, .8fr) minmax(120px, .6fr) minmax(160px, .85fr) minmax(240px, 1.5fr); }
 .browse-field label { display: block; margin-bottom: 7px; color: #4f5b69; font-size: 12px; font-weight: 600; }
 .browse-field .select-wrap select { font-size: 12px; }
 .browse-scope-value { height: 39px; display: flex; align-items: center; overflow: hidden; padding: 0 11px; color: #415064; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
@@ -330,10 +339,13 @@ h1, h2, p { margin: 0; }
 
 @media (max-width: 1050px) {
   .content { padding-inline: 24px; }
-  .target-band { grid-template-columns: minmax(145px, .8fr) minmax(165px, 1fr) minmax(245px, 1.4fr); gap: 12px; }
+  .target-band { grid-template-columns: minmax(130px, .8fr) minmax(95px, .65fr) minmax(140px, .85fr) minmax(200px, 1.3fr); gap: 12px; }
   .subfolder-bar > input { width: 170px; }
   .target-summary-title span { display: none; }
-  .browse-toolbar { grid-template-columns: 160px 190px 1fr; gap: 10px; }
+  .browse-toolbar { grid-template-columns: 150px 180px 1fr; gap: 10px; }
+  .browse-toolbar.four { grid-template-columns: 120px 100px 140px 1fr; }
+  .path-filter .select-wrap { width: 190px; }
+  .category-add > input { width: 240px; }
   .object-head, .object-row { grid-template-columns: minmax(220px, 2fr) 80px minmax(140px, 1fr) 134px; gap: 10px; }
   .task-head, .task-row { grid-template-columns: minmax(220px, 2fr) 76px minmax(120px, 1fr) 80px 70px; column-gap: 10px; }
 }
