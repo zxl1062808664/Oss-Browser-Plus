@@ -3,7 +3,7 @@ import {
   ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, FolderTreeNode, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, ProfileInput, UploadPreset } from '../../shared/types'
+import type { AppConfig, FolderTreeNode, LocalUploadItem, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
@@ -748,6 +748,7 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
   const [message, setMessage] = useState('')
   const [pathProfileId, setPathProfileId] = useState(config.profiles[0]?.id || '')
   const [categoryName, setCategoryName] = useState('')
+  const [deletingCategory, setDeletingCategory] = useState<PathCategory | null>(null)
   const effectivePathProfileId = config.profiles.some((profile) => profile.id === pathProfileId) ? pathProfileId : (config.profiles[0]?.id || '')
   useEffect(() => {
     if (pathProfileId !== effectivePathProfileId) setPathProfileId(effectivePathProfileId)
@@ -809,12 +810,19 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
           <span className="config-icon path"><FolderSearch size={20} /></span>
           <div className="config-main"><div><strong>{category.name}</strong><em className="category-tag">分类</em></div><span>{count} 个常用路径</span></div>
           <span className="profile-name">路径分类</span>
-          <button className="icon-button small danger" title="删除分类" onClick={async () => { if (window.confirm(`删除分类“${category.name}”？其下 ${count} 个常用路径将变为未分类。`)) onChange(await window.desktopApi.deleteCategory(category.id)) }}><Trash2 size={16} /></button>
+          <button className="icon-button small danger" title="删除分类" onClick={() => setDeletingCategory(category)}><Trash2 size={16} /></button>
         </div>
       })}</div>}
     </section>}
 
     {tab === 'upload' && <UploadPreferences config={config} onChange={onChange} />}
+
+    {deletingCategory && <Modal title="删除分类" onClose={() => setDeletingCategory(null)}>
+      <div className="op-form">
+        <p className="op-warn">确定删除分类“{deletingCategory.name}”？其下 {config.presets.filter((preset) => preset.categoryId === deletingCategory.id).length} 个常用路径将变为“未分类”，路径本身不受影响。</p>
+        <div className="op-actions"><button type="button" className="text-button" onClick={() => setDeletingCategory(null)}>取消</button><button type="button" className="primary danger" onClick={async () => { onChange(await window.desktopApi.deleteCategory(deletingCategory.id)); setDeletingCategory(null) }}><Trash2 size={16} />确认删除</button></div>
+      </div>
+    </Modal>}
 
     {profileForm && <Modal title={config.profiles.some((item) => item.id === profileForm.id) ? '编辑 OSS 账号' : '添加 OSS 账号'} onClose={() => setProfileForm(null)}>
       <form onSubmit={async (event) => { event.preventDefault(); onChange(await window.desktopApi.saveProfile(profileForm)); setProfileForm(null) }}>
