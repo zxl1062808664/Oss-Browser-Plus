@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import {
   ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
@@ -65,6 +65,13 @@ function App() {
     })
   }, [])
 
+  // 兜底：拖到页面空白处时阻止 DOM 导航到 file://（放置区的 drop 已自行 preventDefault）
+  useEffect(() => {
+    const preventDrop = (event: DragEvent) => event.preventDefault()
+    window.addEventListener('drop', preventDrop)
+    return () => window.removeEventListener('drop', preventDrop)
+  }, [])
+
   const notify = (message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 1800)
@@ -78,6 +85,16 @@ function App() {
     if (!items.length) return
     setTasks((current) => [...current, ...items.map((item): UploadTask => ({ ...item, status: 'waiting', progress: 0 }))])
     addLog('info', `已添加 ${items.length} 个文件到上传队列`)
+  }
+
+  const addItemsFromPaths = async (paths: string[]) => {
+    if (!paths.length) return
+    try {
+      const items = await window.desktopApi.collectFromPaths(paths)
+      addItems(items)
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '读取拖入的文件失败')
+    }
   }
 
   const selectFiles = async () => addItems(await window.desktopApi.selectFiles())
@@ -251,6 +268,7 @@ function App() {
             onRetry={(id) => startUpload(id)}
             onClear={() => setTasks((current) => current.filter((item) => !['success', 'skipped'].includes(item.status)))}
             onCancelAll={cancelAll}
+            onDropPaths={addItemsFromPaths}
           />
         ) : page === 'browse' ? (
           <BrowsePage config={config} initialProfileId={selectedProfileId} initialPresetId={selectedPresetId} />
@@ -310,8 +328,57 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
   const [urlItem, setUrlItem] = useState<{ key: string; signed: string; publicUrl: string } | null>(null)
   const [urlExpires, setUrlExpires] = useState(604800)
   const [uploadQueue, setUploadQueue] = useState<UploadTask[]>([])
+  const uploadPendingRef = useRef<UploadTask[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const dragDepth = useRef(0)
+  const [dragOver, setDragOver] = useState(false)
+  const handleBrowseDragEnter = () => {
+    dragDepth.current += 1
+    setDragOver(true)
+  }
+  const handleBrowseDragLeave = () => {
+    dragDepth.current -= 1
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0
+      setDragOver(false)
+    }
+  }
+  const handleBrowseDragOver = (event: ReactDragEvent) => {
+    // preventDefault 表示这里是合法放置目标，Chromium 才会触发 drop 并切换光标；
+    // dropEffect 决定鼠标显示 copy 图标。
+    event.preventDefault()
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy'
+      event.dataTransfer.effectAllowed = 'copy'
+    }
+  }
+  const handleBrowseDrop = async (event: ReactDragEvent) => {
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragOver(false)
+
+    const paths = window.desktopApi.getPathsForFiles(Array.from(event.dataTransfer.files))
+    if (!paths.length) {
+      setNotice('未能读取拖入的文件路径，请改用「上传文件 / 上传文件夹」按钮')
+      return
+    }
+    if (!profile || !bucketName || atBucketList) {
+      setNotice('请先打开某个 Bucket 目录，再拖入文件')
+      return
+    }
+    try {
+      const items = await window.desktopApi.collectFromPaths(paths)
+      if (items.length) {
+        uploadToCurrentDir(items)
+        setNotice(`已加入 ${items.length} 个文件，开始上传到 oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+      } else {
+        setNotice('拖入的内容中没有可上传的文件')
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '读取拖入的文件失败')
+    }
+  }
   const urlExpireOptions = [
     { label: '有效期：1 小时', value: 3600 },
     { label: '有效期：1 天', value: 86400 },
@@ -512,14 +579,28 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
 
   const uploadToCurrentDir = async (items: LocalUploadItem[]) => {
     if (!profile || !bucketName || !items.length) return
-    const tasks: UploadTask[] = items.map((item) => ({ ...item, status: 'waiting', progress: 0 }))
-    setUploadQueue((queue) => [...queue, ...tasks])
+    enqueueToCurrentDir(items)
+    await runBrowseUpload()
+  }
+
+  const enqueueToCurrentDir = (items: LocalUploadItem[]) => {
+    const newTasks: UploadTask[] = items.map((item) => ({ ...item, status: 'waiting', progress: 0 }))
+    uploadPendingRef.current.push(...newTasks)
+    setUploadQueue((queue) => [...queue, ...newTasks])
+    setUploadOpen(true)
+  }
+
+  const runBrowseUpload = async () => {
+    if (!profile || !bucketName || uploading) return
+    const pending = uploadPendingRef.current
+    if (!pending.length) return
     setUploading(true)
-    let cursor = 0
+    let doneCount = 0
     let failedCount = 0
     const worker = async () => {
-      while (cursor < tasks.length) {
-        const task = tasks[cursor++]
+      while (true) {
+        const task = uploadPendingRef.current.shift()
+        if (!task) break
         const objectName = [currentPrefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
         setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, objectName } : item))
         try {
@@ -531,6 +612,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
             bucket: bucketName,
             conflictStrategy: config.conflictStrategy
           })
+          doneCount += 1
           setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'success', progress: 100 } : item))
         } catch (error) {
           failedCount += 1
@@ -538,10 +620,15 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(config.concurrentUploads, tasks.length) }, worker))
+    await Promise.all(Array.from({ length: config.concurrentUploads }, worker))
+    uploadPendingRef.current = []
     setUploading(false)
-    setNotice(`上传完成：成功 ${tasks.length - failedCount} / ${tasks.length} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+    setNotice(`上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
     refreshObjects()
+  }
+
+  const startBrowseUpload = async () => {
+    runBrowseUpload()
   }
 
   const uploadFilesToDir = async () => {
@@ -567,7 +654,14 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     setCurrentPrefix(parent.length >= rootPrefix.length ? parent : rootPrefix)
   }
 
-  return <>
+  return (
+    <div
+      className={`page-dropzone${dragOver ? ' drag-active' : ''}`}
+      onDragEnter={handleBrowseDragEnter}
+      onDragLeave={handleBrowseDragLeave}
+      onDragOver={handleBrowseDragOver}
+      onDrop={handleBrowseDrop}
+    >
     <header className="page-header"><div className="header-btn-wrap"><button className="icon-button" title="查看上传进度" onClick={() => setUploadOpen(true)}><Upload size={19} /></button>{uploadQueue.some((item) => item.status === 'waiting' || item.status === 'uploading') && <span className="upload-badge">{uploadQueue.filter((item) => item.status === 'waiting' || item.status === 'uploading').length}</span>}</div><button className="icon-button" title="刷新目录" onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={19} /></button></header>
     <div className="browse-mode"><span>查看范围</span><div className="segmented"><button className={mode === 'account' ? 'active' : ''} onClick={() => setMode('account')}>整个账号</button><button className={mode === 'preset' ? 'active' : ''} onClick={() => setMode('preset')}>预设路径</button></div></div>
     {!config.profiles.length ? <div className="empty-setup"><span className="empty-icon"><Cloud size={30} /></span><h2>先配置 OSS 账号</h2><p>配置账号后即可查看 OSS 文件。</p></div> : mode === 'preset' && !preset ? <div className="empty-setup"><span className="empty-icon"><FolderSearch size={30} /></span><h2>暂无可查看路径</h2><p>请在设置中添加一个常用路径，或切换到整个账号模式。</p></div> : <>
@@ -583,6 +677,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
         <span className="browse-upload-title"><Upload size={15} />上传到 <b>{bucketName}{currentPrefix ? `/${currentPrefix}/` : '/'}</b></span>
         <button className="secondary compact" disabled={uploading} onClick={uploadFilesToDir}><FileUp size={15} />上传文件</button>
         <button className="secondary compact" disabled={uploading} onClick={uploadFolderToDir}><FolderOpen size={15} />上传文件夹</button>
+        {uploadQueue.some((item) => item.status === 'waiting') && <button className="primary compact" disabled={uploading} onClick={startBrowseUpload}><Upload size={15} />开始上传（{uploadQueue.filter((item) => item.status === 'waiting').length}）</button>}
       </div>}
       <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {notice && <div className="browse-notice">{notice}</div>}
@@ -634,11 +729,13 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
             <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>
             <span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? `${task.progress}%` : task.status === 'success' ? '完成' : task.status === 'failed' ? '失败' : '等待'}</span>
           </div>)}</div>
-          <div className="op-actions"><button type="button" className="text-button" disabled={uploading} onClick={() => setUploadQueue((queue) => queue.filter((item) => !['success', 'failed'].includes(item.status)))}>清空已完成</button><button type="button" className="primary" onClick={() => setUploadOpen(false)}>关闭</button></div>
+          <div className="op-actions"><button type="button" className="text-button" disabled={uploading} onClick={() => setUploadQueue((queue) => queue.filter((item) => !['success', 'failed'].includes(item.status)))}>清空已完成</button><button type="button" className="primary" disabled={uploading || !uploadQueue.some((item) => item.status === 'waiting')} onClick={startBrowseUpload}><Upload size={16} />开始上传</button><button type="button" className="primary" onClick={() => setUploadOpen(false)}>关闭</button></div>
         </>}
       </div>
     </Modal>}
-  </>
+    {dragOver && <div className="drop-overlay"><Upload size={30} /><span>拖放文件 / 文件夹到此处，加入当前目录的上传队列</span></div>}
+    </div>
+  )
 }
 
 interface UploadPageProps {
@@ -649,12 +746,44 @@ interface UploadPageProps {
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
   onUpload: () => void; onSettings: () => void; onLogs: () => void; onRemove: (id: string) => void; onRetry: (id: string) => void; onClear: () => void; onCancelAll: () => void
+  onDropPaths: (paths: string[]) => void
 }
 
 function UploadPage(props: UploadPageProps) {
   const { config, tasks, selectedPreset, selectedProfile, subfolder, onSubfolderChange } = props
   const [showTargetPicker, setShowTargetPicker] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
+  const dragDepth = useRef(0)
+  const [dragOver, setDragOver] = useState(false)
+  const handleDragEnter = () => {
+    dragDepth.current += 1
+    setDragOver(true)
+  }
+  const handleDragLeave = () => {
+    dragDepth.current -= 1
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0
+      setDragOver(false)
+    }
+  }
+  const handleDragOver = (event: ReactDragEvent) => {
+    event.preventDefault()
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy'
+      event.dataTransfer.effectAllowed = 'copy'
+    }
+  }
+  const handleDrop = (event: ReactDragEvent) => {
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragOver(false)
+    const paths = window.desktopApi.getPathsForFiles(Array.from(event.dataTransfer.files))
+    if (!paths.length) {
+      window.alert('未能读取拖入的文件路径，请改用「上传文件 / 上传文件夹」按钮')
+      return
+    }
+    props.onDropPaths(paths)
+  }
   const subfolderPrefix = normalizePrefix(subfolder)
   const filteredPresets = categoryFilter ? props.availablePresets.filter((preset) => preset.categoryId === categoryFilter) : props.availablePresets
   const changeCategoryFilter = (value: string) => {
@@ -662,7 +791,14 @@ function UploadPage(props: UploadPageProps) {
     const list = value ? props.availablePresets.filter((preset) => preset.categoryId === value) : props.availablePresets
     if (!list.some((preset) => preset.id === props.selectedPresetId) && list.length) props.onPresetChange(list[0].id)
   }
-  return <>
+  return (
+    <div
+      className={`page-dropzone${dragOver ? ' drag-active' : ''}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
     <header className="page-header">
       <button className="icon-button" title="查看运行日志" onClick={props.onLogs}><ScrollText size={19} /></button>
     </header>
@@ -726,7 +862,9 @@ function UploadPage(props: UploadPageProps) {
       </section>
     </>}
     {showTargetPicker && <TargetPickerModal config={config} primaryId={props.selectedPresetId} selectedIds={props.selectedTargets.map((target) => target.id)} onClose={() => setShowTargetPicker(false)} onSave={(ids) => { props.onTargetsChange(ids); setShowTargetPicker(false) }} />}
-  </>
+    {dragOver && <div className="drop-overlay"><Upload size={30} /><span>拖放文件 / 文件夹到此处，加入上传队列</span></div>}
+    </div>
+  )
 }
 
 function TaskRow({ task, busy, onRetry, onRemove }: { task: UploadTask; busy: boolean; onRetry: () => void; onRemove: () => void }) {

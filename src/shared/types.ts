@@ -143,10 +143,15 @@ export interface DesktopApi {
   savePreferences: (input: Pick<AppConfig, 'concurrentUploads' | 'conflictStrategy'>) => Promise<AppConfig>
   testConnection: (profile: ProfileInput) => Promise<{ ok: boolean; message: string }>
   selectFiles: () => Promise<LocalUploadItem[]>
+  /** 监听主进程转发的文件拖放事件，返回取消订阅函数；回调参数为拖入的本地路径数组（含文件夹） */
+  /** 把拖放的 File 对象转成真实本地路径（Electron 32+ 用 webUtils.getPathForFile，只能在预加载层调用） */
+  getPathsForFiles: (files: File[]) => string[]
   pickFolderRoot: () => Promise<string | null>
   getFolderTree: (root: string) => Promise<FolderTreeNode>
   collectFolderSelection: (root: string, selectedRelativePaths: string[]) => Promise<LocalUploadItem[]>
   selectFolderForUpload: () => Promise<LocalUploadItem[]>
+  /** 把拖入的本地文件/文件夹路径展开为上传项（文件→单条，文件夹→保留文件夹名为顶层目录递归展开） */
+  collectFromPaths: (paths: string[]) => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
   cancelAllUploads: () => Promise<{ cancelled: number }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DesktopApi, UploadProgressEvent } from '../shared/types'
 
 const api: DesktopApi = {
@@ -12,10 +12,22 @@ const api: DesktopApi = {
   savePreferences: (input) => ipcRenderer.invoke('config:save-preferences', input),
   testConnection: (profile) => ipcRenderer.invoke('oss:test', profile),
   selectFiles: () => ipcRenderer.invoke('files:select'),
+  // Electron 32+ 已移除 File.path，且在 contextIsolation 下渲染进程读不到本地路径。
+  // webUtils.getPathForFile 只能在预加载（隔离上下文）里调用，因此在这里把 File 转成真实路径。
+  getPathsForFiles: (files) => files
+    .map((file) => {
+      try {
+        return webUtils.getPathForFile(file)
+      } catch {
+        return ''
+      }
+    })
+    .filter((value): value is string => Boolean(value)),
   pickFolderRoot: () => ipcRenderer.invoke('folder:pick-root'),
   getFolderTree: (root) => ipcRenderer.invoke('folder:tree', root),
   collectFolderSelection: (root, selectedPaths) => ipcRenderer.invoke('folder:collect', root, selectedPaths),
   selectFolderForUpload: () => ipcRenderer.invoke('folder:select-upload'),
+  collectFromPaths: (paths) => ipcRenderer.invoke('files:collect-from-paths', paths),
   upload: (request) => ipcRenderer.invoke('oss:upload', request),
   cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
   listObjects: (request) => ipcRenderer.invoke('oss:list-objects', request),

@@ -328,6 +328,17 @@ function registerIpc(): void {
     return scanUploadFolder(result.filePaths[0])
   })
 
+  /** 把拖入的本地路径（文件或文件夹，可混合）展开为上传任务列表 */
+  ipcMain.handle('files:collect-from-paths', async (_event, paths: string[]) => {
+    const items: LocalUploadItem[] = []
+    for (const absolutePath of paths) {
+      if (!absolutePath) continue
+      const name = path.basename(absolutePath)
+      items.push(...await scanSelection(absolutePath, name))
+    }
+    return items
+  })
+
   ipcMain.handle('clipboard:write', (_event, value: string) => clipboard.writeText(value))
 
   ipcMain.handle('oss:list-objects', async (_event, request: ListObjectsRequest) => {

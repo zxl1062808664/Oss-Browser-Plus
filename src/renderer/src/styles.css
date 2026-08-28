@@ -349,3 +349,27 @@ h1, h2, p { margin: 0; }
   .object-head, .object-row { grid-template-columns: minmax(220px, 2fr) 80px minmax(140px, 1fr) 134px; gap: 10px; }
   .task-head, .task-row { grid-template-columns: minmax(220px, 2fr) 76px minmax(120px, 1fr) 80px 70px; column-gap: 10px; }
 }
+
+/* 拖拽放置区：高亮与遮罩 */
+.page-dropzone { position: relative; }
+.drop-overlay {
+  position: absolute;
+  inset: 6px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: var(--blue);
+  background: rgba(243, 247, 253, 0.94);
+  border: 2px dashed var(--blue);
+  border-radius: 10px;
+  pointer-events: none;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+.drop-overlay span { color: var(--muted); font-size: 12px; font-weight: 500; }
+.page-dropzone.drag-active { background: #f0f6ff; }

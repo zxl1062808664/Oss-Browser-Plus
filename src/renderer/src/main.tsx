@@ -24,6 +24,7 @@ if (!window.desktopApi) {
     savePreferences: async (input) => { previewConfig = { ...previewConfig, ...input }; return previewConfig },
     testConnection: async () => ({ ok: true, message: '演示模式：连接测试通过' }),
     selectFiles: async () => Array.from({ length: 12 }, (_, index) => ({ id: crypto.randomUUID(), absolutePath: `C:/preview/package-${index + 1}.zip`, relativePath: `release/package-${index + 1}.zip`, name: `package-${index + 1}.zip`, size: (index + 1) * 1024 * 1024 })),
+    getPathsForFiles: (files) => files.map((file) => (file as unknown as { name: string }).name),
     pickFolderRoot: async () => 'C:/projects/demo',
     getFolderTree: async (): Promise<FolderTreeNode> => ({
       name: 'demo',
@@ -47,6 +48,7 @@ if (!window.desktopApi) {
     }),
     collectFolderSelection: async (_root, selectedPaths) => selectedPaths.flatMap((relativePath) => [{ id: crypto.randomUUID(), absolutePath: `C:/projects/demo/${relativePath}/sample.zip`, relativePath: `${relativePath}/sample.zip`, name: 'sample.zip', size: 1024 * 1024 }]),
     selectFolderForUpload: async () => [{ id: crypto.randomUUID(), absolutePath: 'C:/upload/demo/folder/a.txt', relativePath: 'folder/a.txt', name: 'a.txt', size: 1024 }],
+    collectFromPaths: async (paths) => paths.map((absolutePath) => ({ id: crypto.randomUUID(), absolutePath, relativePath: absolutePath.split('/').pop() || absolutePath, name: absolutePath.split('/').pop() || absolutePath, size: 1024 * 1024 })),
     upload: async () => { if (!previewFailureInjected) { previewFailureInjected = true; throw new Error('Preview network interruption') } return {} }, cancelAllUploads: async () => ({ cancelled: 0 }), listObjects: async ({ prefix }) => [{ key: `${prefix ? `${prefix}/` : ''}packages`, name: 'packages', size: 0, isFolder: true }, { key: `${prefix ? `${prefix}/` : ''}README.md`, name: 'README.md', size: 12345, lastModified: new Date().toISOString(), isFolder: false }], listBuckets: async () => [{ name: 'demo-bucket', region: 'oss-cn-hangzhou', creationDate: new Date().toISOString() }, { name: 'archive-bucket', region: 'oss-cn-shanghai', creationDate: new Date().toISOString() }], downloadObjects: async () => ({ directory: 'C:/Downloads', count: 1, folderCount: 0 }), deleteObjects: async ({ keys }) => ({ deleted: keys.length }), renameObject: async ({ key, newName }) => ({ key: key.split('/').slice(0, -1).concat(newName).join('/') }), transferObjects: async ({ sourceKeys }) => ({ count: sourceKeys.length }), getObjectUrl: async ({ key }) => ({ signed: `https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/${encodeURIComponent(key)}?signature=preview`, publicUrl: `https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/${encodeURIComponent(key)}` }), copyText: async () => {}, onUploadProgress: () => () => {}
   }
 }
