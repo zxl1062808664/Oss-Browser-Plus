@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { DesktopApi, UploadProgressEvent } from '../shared/types'
+import type { DesktopApi, OpProgressEvent, UploadProgressEvent } from '../shared/types'
 
 const api: DesktopApi = {
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -42,6 +42,11 @@ const api: DesktopApi = {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)
     ipcRenderer.on('oss:upload-progress', listener)
     return () => ipcRenderer.removeListener('oss:upload-progress', listener)
+  },
+  onOpProgress: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: OpProgressEvent) => callback(value)
+    ipcRenderer.on('oss:op-progress', listener)
+    return () => ipcRenderer.removeListener('oss:op-progress', listener)
   }
 }
 

@@ -65,6 +65,9 @@ function decryptSecret(profile: StoredProfile): string {
   return safeStorage.decryptString(Buffer.from(profile.encryptedSecret, 'base64'))
 }
 
+/** 批量删除每批的对象数（OSS deleteMulti 上限 1000，取 100 让进度更平滑） */
+const DELETE_BATCH_SIZE = 100
+
 function createClient(profile: StoredProfile, bucket?: string, secretOverride?: string, regionOverride?: string): InstanceType<typeof OSS> {
   return new OSS({
     accessKeyId: profile.accessKeyId,
@@ -160,7 +163,15 @@ async function collectSelection(root: string, selectedPaths: string[]): Promise<
 }
 
 /** 把文件/文件夹 key 展开为实际对象 key 列表（文件夹按前缀递归获取其下全部对象） */
-async function expandObjectKeys(client: InstanceType<typeof OSS>, keys: string[]): Promise<string[]> {
+/**
+ * 把 key 列表里以 / 结尾的文件夹递归展开成具体对象 key。
+ * onScan 用于上报扫描进度（删除大文件夹时列出所有对象可能耗时较久）。
+ */
+async function expandObjectKeys(
+  client: InstanceType<typeof OSS>,
+  keys: string[],
+  onScan?: (scanned: number) => void
+): Promise<string[]> {
   const result: string[] = []
   for (const key of keys) {
     if (!key.endsWith('/')) {
@@ -174,6 +185,7 @@ async function expandObjectKeys(client: InstanceType<typeof OSS>, keys: string[]
         if (object.name !== key) result.push(object.name)
       }
       marker = page.isTruncated ? page.nextMarker : undefined
+      onScan?.(result.length)
     } while (marker)
   }
   return result
@@ -378,7 +390,7 @@ function registerIpc(): void {
     })).sort((a, b) => a.name.localeCompare(b.name))
   })
 
-  ipcMain.handle('oss:download-objects', async (_event, request: DownloadObjectsRequest) => {
+  ipcMain.handle('oss:download-objects', async (event, request: DownloadObjectsRequest) => {
     const result = await dialog.showOpenDialog({ title: '选择下载目录', properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || !result.filePaths[0]) return { cancelled: true as const }
     const config = await readConfig()
@@ -408,29 +420,65 @@ function registerIpc(): void {
       } while (marker)
     }
 
-    for (const key of keys) {
+    const keyList = Array.from(keys)
+    let done = 0
+    let failed = 0
+    for (const key of keyList) {
       const relative = (key.startsWith(basePrefix) ? key.slice(basePrefix.length) : path.basename(key))
         .split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
       const destination = path.join(directory, relative)
-      await fs.mkdir(path.dirname(destination), { recursive: true })
-      const response = await client.getStream(key)
-      if (!response.stream) throw new Error(`无法读取对象：${key}`)
-      await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
+      try {
+        await fs.mkdir(path.dirname(destination), { recursive: true })
+        const response = await client.getStream(key)
+        if (!response.stream) throw new Error(`无法读取对象：${key}`)
+        await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
+      } catch {
+        failed += 1
+      }
+      done += 1
+      event.sender.send('oss:op-progress', { done, total: keyList.length, failed, current: key })
     }
-    return { directory, count: keys.size, folderCount: request.folderKeys.length }
+    return { directory, count: keyList.length - failed, failed, folderCount: request.folderKeys.length }
   })
 
-  ipcMain.handle('oss:delete-objects', async (_event, request: DeleteObjectsRequest) => {
+  ipcMain.handle('oss:delete-objects', async (event, request: DeleteObjectsRequest) => {
     const config = await readConfig()
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
     const client = createClient(profile, request.bucket, undefined, request.region)
-    const keys = await expandObjectKeys(client, request.keys)
-    for (const key of keys) await client.delete(key)
-    return { deleted: keys.length }
+    event.sender.send('oss:op-progress', { done: 0, total: 0, current: '正在扫描对象…' })
+    const keys = await expandObjectKeys(client, request.keys, (scanned) => {
+      event.sender.send('oss:op-progress', { done: 0, total: 0, current: `正在扫描对象… 已发现 ${scanned} 个` })
+    })
+
+    let done = 0
+    let failed = 0
+    // 批量删除：每批最多 1000（OSS 上限），把上千次网络往返压到几十次
+    for (let index = 0; index < keys.length; index += DELETE_BATCH_SIZE) {
+      const batch = keys.slice(index, index + DELETE_BATCH_SIZE)
+      try {
+        // 注意：不能用 quiet 模式——quiet 下 OSS 只返回失败的 <Error>，不返回 <Deleted>，
+        // 那样 deleted 会是空数组，导致被误判为整批失败。
+        const result = await client.deleteMulti(batch)
+        const deletedCount = Array.isArray(result?.deleted) ? result.deleted.length : batch.length
+        failed += batch.length - deletedCount
+      } catch {
+        // 整批失败时退化为逐个删除，尽量删掉其余对象
+        for (const key of batch) {
+          try {
+            await client.delete(key)
+          } catch {
+            failed += 1
+          }
+        }
+      }
+      done += batch.length
+      event.sender.send('oss:op-progress', { done, total: keys.length, failed })
+    }
+    return { deleted: keys.length - failed, failed }
   })
 
-  ipcMain.handle('oss:rename-object', async (_event, request: RenameObjectRequest) => {
+  ipcMain.handle('oss:rename-object', async (event, request: RenameObjectRequest) => {
     const config = await readConfig()
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
@@ -444,7 +492,13 @@ function registerIpc(): void {
       ? `${(withSlash.includes('/') ? request.key.slice(0, withSlash.lastIndexOf('/') + 1) : '')}${newName}/`
       : `${(request.key.includes('/') ? request.key.slice(0, request.key.lastIndexOf('/') + 1) : '')}${newName}`
     if (destKey === request.key) throw new Error('新名称与原名称相同')
-    const objects = isFolder ? await expandObjectKeys(client, [request.key]) : [request.key]
+    event.sender.send('oss:op-progress', { done: 0, total: 0, current: '正在扫描对象…' })
+    const objects = isFolder
+      ? await expandObjectKeys(client, [request.key], (scanned) => {
+        event.sender.send('oss:op-progress', { done: 0, total: 0, current: `正在扫描对象… 已发现 ${scanned} 个` })
+      })
+      : [request.key]
+    let done = 0
     for (const object of objects) {
       if (isFolder) {
         const rel = object.slice(request.key.length)
@@ -455,40 +509,62 @@ function registerIpc(): void {
         await client.copy(destKey, object)
         await client.delete(object)
       }
+      done += 1
+      event.sender.send('oss:op-progress', { done, total: objects.length, current: object })
     }
     return { key: destKey }
   })
 
-  ipcMain.handle('oss:transfer-objects', async (_event, request: TransferObjectsRequest) => {
+  ipcMain.handle('oss:transfer-objects', async (event, request: TransferObjectsRequest) => {
     const config = await readConfig()
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
     const client = createClient(profile, request.bucket, undefined, request.region)
     const destPrefix = request.destinationPrefix.trim().replace(/^\/+|\/+$/g, '')
-    let count = 0
+    event.sender.send('oss:op-progress', { done: 0, total: 0, current: '正在扫描对象…' })
+
+    // 先展开出全部待处理对象，避免处理过程中无法得知总量
+    type Pair = { source: string; target: string }
+    const pairs: Pair[] = []
     for (const sourceKey of request.sourceKeys) {
       if (sourceKey.endsWith('/')) {
         const folderName = sourceKey.slice(0, -1).split('/').pop() || ''
         const folderDestPrefix = [destPrefix, folderName].filter(Boolean).join('/')
-        const objects = await expandObjectKeys(client, [sourceKey])
+        const objects = await expandObjectKeys(client, [sourceKey], (scanned) => {
+          event.sender.send('oss:op-progress', { done: 0, total: 0, current: `正在扫描对象… 已发现 ${scanned} 个` })
+        })
         for (const object of objects) {
           const rel = object.slice(sourceKey.length)
           const targetKey = [folderDestPrefix, rel].filter(Boolean).join('/')
           if (targetKey === object) throw new Error(`目标位置与原位置相同：${object}`)
-          await client.copy(targetKey, object)
-          if (request.mode === 'move') await client.delete(object)
-          count += 1
+          pairs.push({ source: object, target: targetKey })
         }
       } else {
         const name = sourceKey.split('/').pop() || ''
         const targetKey = [destPrefix, name].filter(Boolean).join('/')
         if (targetKey === sourceKey) throw new Error(`目标位置与原位置相同：${sourceKey}`)
-        await client.copy(targetKey, sourceKey)
-        if (request.mode === 'move') await client.delete(sourceKey)
-        count += 1
+        pairs.push({ source: sourceKey, target: targetKey })
       }
     }
-    return { count }
+
+    let count = 0
+    let failed = 0
+    for (const pair of pairs) {
+      try {
+        await client.copy(pair.target, pair.source)
+        if (request.mode === 'move') await client.delete(pair.source)
+        count += 1
+      } catch {
+        failed += 1
+      }
+      event.sender.send('oss:op-progress', {
+        done: count + failed,
+        total: pairs.length,
+        failed,
+        current: pair.source
+      })
+    }
+    return { count, failed }
   })
 
   ipcMain.handle('oss:get-object-url', async (_event, request: GetObjectUrlRequest) => {

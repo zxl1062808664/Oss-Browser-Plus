@@ -132,6 +132,18 @@ export interface UploadProgressEvent {
   total: number
 }
 
+/** 批量操作（删除 / 复制 / 移动 / 下载 / 重命名）的进度事件 */
+export interface OpProgressEvent {
+  /** 已完成的对象数 */
+  done: number
+  /** 需要处理的总对象数 */
+  total: number
+  /** 当前正在处理的对象 key，用于展示文件名 */
+  current?: string
+  /** 失败数量（删除等批量操作可能部分失败） */
+  failed?: number
+}
+
 export interface DesktopApi {
   getConfig: () => Promise<AppConfig>
   saveProfile: (profile: ProfileInput) => Promise<AppConfig>
@@ -156,11 +168,12 @@ export interface DesktopApi {
   cancelAllUploads: () => Promise<{ cancelled: number }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>
   listBuckets: (profileId: string) => Promise<OssBucketItem[]>
-  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number; folderCount: number } | { cancelled: true }>
-  deleteObjects: (request: DeleteObjectsRequest) => Promise<{ deleted: number }>
+  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number; failed: number; folderCount: number } | { cancelled: true }>
+  deleteObjects: (request: DeleteObjectsRequest) => Promise<{ deleted: number; failed: number }>
   renameObject: (request: RenameObjectRequest) => Promise<{ key: string }>
-  transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number }>
+  transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number; failed: number }>
   getObjectUrl: (request: GetObjectUrlRequest) => Promise<{ signed: string; publicUrl: string }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
+  onOpProgress: (callback: (event: OpProgressEvent) => void) => () => void
 }

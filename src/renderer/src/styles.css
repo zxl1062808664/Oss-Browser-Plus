@@ -276,6 +276,15 @@ h1, h2, p { margin: 0; }
 .select-all { display: inline-flex; align-items: center; gap: 6px; color: #5d6b7b; font-size: 11px; white-space: nowrap; }
 .select-all input { width: 15px; height: 15px; accent-color: var(--blue); }
 .browse-notice { padding: 9px 12px; margin-top: 10px; color: #176b52; background: #eaf7f2; border: 1px solid #c9e7dc; border-radius: 5px; font-size: 11px; }
+
+/* 批量操作进度（删除 / 复制 / 移动 / 下载 / 重命名） */
+.op-progress { padding: 10px 12px; margin-top: 10px; background: #f0f6ff; border: 1px solid #cfe0f8; border-radius: 6px; font-size: 11px; }
+.op-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.op-progress-label { display: flex; align-items: center; gap: 7px; color: var(--blue); font-weight: 600; }
+.op-progress-file { max-width: 45%; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.op-progress-track { height: 6px; overflow: hidden; background: #dfe9f7; border-radius: 3px; }
+.op-progress-bar { height: 100%; background: var(--blue); border-radius: 3px; transition: width .2s ease; }
+.op-progress-bar.has-failed { background: var(--red); }
 .object-table { height: 352px; overflow-y: auto; margin-top: 10px; background: #fff; border: 1px solid var(--border); border-radius: 7px; scrollbar-gutter: stable; }
 .object-head, .object-row { display: grid; grid-template-columns: minmax(250px, 2fr) 100px minmax(160px, 1fr) 150px; align-items: center; gap: 14px; }
 .object-head { position: sticky; top: 0; z-index: 2; min-height: 39px; padding: 0 15px; color: #727f8e; background: #f7f9fb; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; }

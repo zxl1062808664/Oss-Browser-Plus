@@ -23,6 +23,12 @@ declare module 'ali-oss' {
     delete(name: string, options?: Record<string, unknown>): Promise<{ res: unknown; deleted?: boolean }>
     copy(name: string, sourceName: string, options?: Record<string, unknown>): Promise<{ res: unknown; data?: unknown }>
     signatureUrl(name: string, options?: { expires?: number; method?: string; process?: string; response?: Record<string, unknown> }): string
+    /**
+     * 批量删除（单次最多 1000 个）。
+     * deleted 是「成功删除」的对象列表（来自响应 XML 的 <Deleted> 节点），
+     * 因此不要传 quiet:true —— quiet 下 OSS 只返回失败的 <Error>，deleted 会是空数组。
+     */
+    deleteMulti(names: string[], options?: Record<string, unknown>): Promise<{ res: unknown; deleted?: Array<{ Key?: string }> }>
   }
   const OSS: { new (options: ClientOptions): OSSClient }
   export default OSS
