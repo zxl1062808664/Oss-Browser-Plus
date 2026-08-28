@@ -370,8 +370,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId }: { config: App
     try {
       const items = await window.desktopApi.collectFromPaths(paths)
       if (items.length) {
-        uploadToCurrentDir(items)
-        setNotice(`已加入 ${items.length} 个文件，开始上传到 oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+        enqueueToCurrentDir(items)
+        setNotice(`已加入 ${items.length} 个文件到上传队列，点击「开始上传」按钮启动 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
       } else {
         setNotice('拖入的内容中没有可上传的文件')
       }
