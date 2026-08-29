@@ -272,6 +272,16 @@ h1, h2, p { margin: 0; }
 .breadcrumbs button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: 12px; }
 .breadcrumbs button:disabled { color: #8994a1; cursor: not-allowed; }
 .breadcrumbs > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.crumb-path { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.crumb-item { min-width: 0; display: inline-flex; align-items: center; gap: 2px; color: #a9b3bf; }
+.crumb-path .crumb { padding: 2px 6px; border: 0; border-radius: 4px; color: var(--blue); background: transparent; cursor: pointer; font-size: 12px; }
+.crumb-path .crumb:hover:not(:disabled) { background: #dbe6f4; }
+.crumb-path .crumb:disabled { color: #7c8794; cursor: default; }
+.crumb-path .crumb.back { margin-right: 4px; color: #176b52; }
+.crumb-path .crumb.back:hover { background: #dcf0e8; }
+.crumb-current { padding: 2px 6px; overflow: hidden; color: #293746; font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.crumb-hint { padding-left: 4px; color: #8994a1; font-size: 12px; }
+.crumb-flag { flex: none; margin-right: 4px; padding: 2px 8px; border: 1px solid #e3c274; border-radius: 10px; color: #8a6414; background: #fdf5e3; font-size: 11px; white-space: nowrap; }
 .browse-actions { display: flex; align-items: center; gap: 14px; }
 .select-all { display: inline-flex; align-items: center; gap: 6px; color: #5d6b7b; font-size: 11px; white-space: nowrap; }
 .select-all input { width: 15px; height: 15px; accent-color: var(--blue); }

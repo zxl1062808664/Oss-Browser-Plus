@@ -406,6 +406,17 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   const bucketName = mode === 'account' ? selectedBucket : preset?.bucket || ''
   const bucketRegion = mode === 'account' ? buckets.find((item) => item.name === selectedBucket)?.region : undefined
   const atBucketList = mode === 'account' && !selectedBucket
+  // 路径分段：预设模式下也允许向上浏览到预设根目录之上（直到 Bucket 根目录），
+  // withinPreset 用于判断当前位置是否仍在预设路径范围内。
+  const rootSegments = mode === 'preset' && rootPrefix ? rootPrefix.split('/') : []
+  const prefixSegments = currentPrefix ? currentPrefix.split('/') : []
+  const withinPreset = mode !== 'preset' || !rootPrefix || currentPrefix === rootPrefix || currentPrefix.startsWith(`${rootPrefix}/`)
+  const crumbBase = withinPreset ? rootSegments : []
+  const crumbSegments = withinPreset ? prefixSegments.slice(rootSegments.length) : prefixSegments
+  const crumbRootLabel = mode === 'preset' && withinPreset && rootPrefix ? rootPrefix.split('/').slice(-1)[0] : bucketName
+  const crumbRootPrefix = withinPreset ? rootPrefix : ''
+  const canGoUp = !atBucketList && Boolean(currentPrefix)
+  const goToCrumb = (index: number) => setCurrentPrefix([...crumbBase, ...crumbSegments.slice(0, index + 1)].join('/'))
   const changePresetCategory = (value: string) => {
     setPresetCategoryId(value)
     const list = value ? accountPresets.filter((item) => item.categoryId === value) : accountPresets
@@ -684,9 +695,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       setSelectedKeys([])
       return
     }
-    if (currentPrefix === rootPrefix) return
-    const parent = currentPrefix.split('/').slice(0, -1).join('/')
-    setCurrentPrefix(parent.length >= rootPrefix.length ? parent : rootPrefix)
+    // 预设路径模式下同样逐级向上，越过预设根目录后可继续回到 Bucket 根目录
+    if (!currentPrefix) return
+    setCurrentPrefix(currentPrefix.split('/').slice(0, -1).join('/'))
   }
 
   return (
@@ -714,7 +725,18 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         <button className="secondary compact" disabled={uploading} onClick={uploadFolderToDir}><FolderOpen size={15} />上传文件夹</button>
         {uploadQueue.some((item) => item.status === 'waiting') && <button className="primary compact" disabled={uploading} onClick={startBrowseUpload}><Upload size={15} />开始上传（{uploadQueue.filter((item) => item.status === 'waiting').length}）</button>}
       </div>}
-      <section className="browse-band"><div className="breadcrumbs"><button disabled={atBucketList || (mode === 'preset' && currentPrefix === rootPrefix)} onClick={goUp}><ArrowUp size={15} />返回上级</button><span>{atBucketList ? 'Bucket 列表' : mode === 'account' ? `${selectedBucket}${currentPrefix ? ` / ${currentPrefix}` : ' / 根目录'}` : currentPrefix.slice(rootPrefix.length).replace(/^\/+/, '') || '根目录'}</span></div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
+      <section className="browse-band"><div className="breadcrumbs">
+        <button disabled={!canGoUp} title="返回上级目录" onClick={goUp}><ArrowUp size={15} />返回上级</button>
+        {atBucketList ? <span>Bucket 列表</span> : <div className="crumb-path">
+          {mode === 'preset' && !withinPreset && <span className="crumb-flag" title={`已离开预设路径 ${rootPrefix}/，当前位于同 Bucket 的更上层目录`}>预设路径外</span>}
+          {mode === 'preset' && !withinPreset && <button className="crumb back" title={`回到 ${rootPrefix || 'Bucket 根目录'}`} onClick={() => setCurrentPrefix(rootPrefix)}>回到预设路径</button>}
+          <button className="crumb" disabled={!crumbSegments.length} title={crumbRootPrefix || `${bucketName} 根目录`} onClick={() => setCurrentPrefix(crumbRootPrefix)}>{crumbRootLabel}</button>
+          {crumbSegments.map((segment, index) => <span className="crumb-item" key={`${segment}-${index}`}><ChevronRight size={13} />{index === crumbSegments.length - 1
+            ? <span className="crumb-current">{segment}</span>
+            : <button className="crumb" onClick={() => goToCrumb(index)}>{segment}</button>}</span>)}
+          {!crumbSegments.length && <span className="crumb-hint">根目录</span>}
+        </div>}
+      </div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {(busyOp || downloading) && <OpProgressBar label={opLabel} progress={opProgress} />}
       {notice && <div className="browse-notice">{notice}</div>}
       <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={busyOp} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={busyOp} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={busyOp} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
