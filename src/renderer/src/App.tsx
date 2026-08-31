@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import {
-  ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
+  ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, FolderTreeNode, LocalUploadItem, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
@@ -21,6 +21,19 @@ const formatBytes = (bytes: number) => {
 }
 const normalizePrefix = (prefix: string) => prefix.replace(/^\/+|\/+$/g, '')
 const fullPath = (preset?: UploadPreset) => preset ? `oss://${preset.bucket}/${normalizePrefix(preset.prefix)}${preset.prefix ? '/' : ''}` : ''
+/** 未分类路径在分组与折叠记忆里使用的键 */
+const UNCATEGORIZED_GROUP = '__uncategorized__'
+/** 常用路径分组的展开状态记忆（存展开的分组，新增分类默认折叠） */
+const EXPANDED_GROUPS_KEY = 'ossupload:expanded-path-groups'
+const loadExpandedGroups = (): string[] => {
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_GROUPS_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 function App() {
   const [page, setPage] = useState<Page>('upload')
@@ -689,6 +702,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
 
   const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
   const selectAll = (checked: boolean) => setSelectedKeys(checked ? objects.map((item) => item.key) : [])
+  const selectedItem = selectedKeys.length === 1 ? objects.find((item) => item.key === selectedKeys[0]) : undefined
   const goUp = () => {
     if (mode === 'account' && selectedBucket && !currentPrefix) {
       setSelectedBucket('')
@@ -736,7 +750,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
             : <button className="crumb" onClick={() => goToCrumb(index)}>{segment}</button>}</span>)}
           {!crumbSegments.length && <span className="crumb-hint">根目录</span>}
         </div>}
-      </div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
+      </div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedItem || busyOp} onClick={() => selectedItem && openRename(selectedItem)}><Pencil size={15} />重命名</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {(busyOp || downloading) && <OpProgressBar label={opLabel} progress={opProgress} />}
       {notice && <div className="browse-notice">{notice}</div>}
       <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={busyOp} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={busyOp} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={busyOp} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
@@ -940,6 +954,19 @@ function TaskRow({ task, busy, onRetry, onRemove }: { task: UploadTask; busy: bo
   </div>
 }
 
+function PresetRow({ preset, profileName, categoryName, onEdit, onDelete }: {
+  preset: UploadPreset; profileName?: string; categoryName?: string
+  onEdit: () => void; onDelete: () => void
+}) {
+  return <div className="config-row">
+    <span className="config-icon path"><FolderOpen size={20} /></span>
+    <div className="config-main"><div><strong>{preset.name}</strong>{preset.isDefault && <em>默认</em>}{categoryName && <em className="category-tag">{categoryName}</em>}</div>{preset.description && <small>{preset.description}</small>}<span>{fullPath(preset)}</span></div>
+    <span className="profile-name">{profileName}</span>
+    <button className="icon-button small" title="编辑" onClick={onEdit}><Pencil size={16} /></button>
+    <button className="icon-button small danger" title="删除" onClick={onDelete}><Trash2 size={16} /></button>
+  </div>
+}
+
 function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (config: AppConfig) => void }) {
   const [tab, setTab] = useState<'oss' | 'paths' | 'categories' | 'upload'>('oss')
   const [profileForm, setProfileForm] = useState<ProfileInput | null>(null)
@@ -948,12 +975,47 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
   const [pathProfileId, setPathProfileId] = useState(config.profiles[0]?.id || '')
   const [categoryName, setCategoryName] = useState('')
   const [deletingCategory, setDeletingCategory] = useState<PathCategory | null>(null)
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(loadExpandedGroups)
   const effectivePathProfileId = config.profiles.some((profile) => profile.id === pathProfileId) ? pathProfileId : (config.profiles[0]?.id || '')
   useEffect(() => {
     if (pathProfileId !== effectivePathProfileId) setPathProfileId(effectivePathProfileId)
   }, [pathProfileId, effectivePathProfileId])
   const accountPresets = config.presets.filter((preset) => preset.profileId === effectivePathProfileId)
   const categoryNameOf = (categoryId?: string) => config.categories.find((category) => category.id === categoryId)?.name
+  // 常用路径按分类分组展示；只有存在已归类路径时才启用折叠，否则保持原来的平铺列表
+  const presetGroups = useMemo(() => {
+    const grouped = new Map<string, UploadPreset[]>()
+    for (const preset of accountPresets) {
+      const key = preset.categoryId || UNCATEGORIZED_GROUP
+      const list = grouped.get(key)
+      if (list) list.push(preset)
+      else grouped.set(key, [preset])
+    }
+    const groups: { key: string; name: string; presets: UploadPreset[] }[] = []
+    for (const category of config.categories) {
+      const list = grouped.get(category.id)
+      if (list?.length) groups.push({ key: category.id, name: category.name, presets: list })
+    }
+    const uncategorized = grouped.get(UNCATEGORIZED_GROUP)
+    if (uncategorized?.length) groups.push({ key: UNCATEGORIZED_GROUP, name: '未分类', presets: uncategorized })
+    return groups
+  }, [accountPresets, config.categories])
+  const groupedPaths = presetGroups.some((group) => group.key !== UNCATEGORIZED_GROUP)
+  const allGroupsExpanded = presetGroups.length > 0 && presetGroups.every((group) => expandedGroups.includes(group.key))
+  const persistExpandedGroups = (next: string[]) => {
+    setExpandedGroups(next)
+    try {
+      window.localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify(next))
+    } catch {
+      // 本地存储不可用时，仅保留本次会话内的展开状态
+    }
+  }
+  const toggleGroup = (key: string) => persistExpandedGroups(expandedGroups.includes(key) ? expandedGroups.filter((item) => item !== key) : [...expandedGroups, key])
+  /** 保存路径后展开它所在的分组，避免改了分类后行「消失」在折叠的分组里 */
+  const revealGroup = (key: string) => {
+    if (!expandedGroups.includes(key)) persistExpandedGroups([...expandedGroups, key])
+  }
+  const toggleAllGroups = () => persistExpandedGroups(allGroupsExpanded ? [] : presetGroups.map((group) => group.key))
   const addCategory = async () => {
     if (!categoryName.trim()) return
     onChange(await window.desktopApi.saveCategory({ id: uid(), name: categoryName.trim() }))
@@ -987,13 +1049,33 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
           <label htmlFor="path-profile-filter">选择账号</label>
           <div className="select-wrap"><select id="path-profile-filter" value={effectivePathProfileId} onChange={(event) => setPathProfileId(event.target.value)}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><ChevronDown size={16} /></div>
           <span className="path-count">{accountPresets.length} 条路径</span>
+          {groupedPaths && <button className="secondary compact fold-all" title={allGroupsExpanded ? '折叠所有分类' : '展开所有分类'} onClick={toggleAllGroups}>{allGroupsExpanded ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}{allGroupsExpanded ? '一键折叠' : '一键展开'}</button>}
         </div>
-        {!accountPresets.length ? <SettingsEmpty title="该账号下还没有常用路径" text="点击右上角“添加路径”，为当前账号配置常用路径。" /> : <div className="config-list">{accountPresets.map((preset) => <div className="config-row" key={preset.id}>
-          <span className="config-icon path"><FolderOpen size={20} /></span><div className="config-main"><div><strong>{preset.name}</strong>{preset.isDefault && <em>默认</em>}{categoryNameOf(preset.categoryId) && <em className="category-tag">{categoryNameOf(preset.categoryId)}</em>}</div>{preset.description && <small>{preset.description}</small>}<span>{fullPath(preset)}</span></div>
-          <span className="profile-name">{config.profiles.find((item) => item.id === preset.profileId)?.name}</span>
-          <button className="icon-button small" title="编辑" onClick={() => setPresetForm(preset)}><Pencil size={16} /></button>
-          <button className="icon-button small danger" title="删除" onClick={async () => onChange(await window.desktopApi.deletePreset(preset.id))}><Trash2 size={16} /></button>
-        </div>)}</div>}
+        {!accountPresets.length ? <SettingsEmpty title="该账号下还没有常用路径" text="点击右上角“添加路径”，为当前账号配置常用路径。" /> : groupedPaths ? <div className="preset-groups">{presetGroups.map((group) => {
+          const expanded = expandedGroups.includes(group.key)
+          return <div className={`preset-group${expanded ? ' expanded' : ''}`} key={group.key}>
+            <button className="preset-group-head" title={expanded ? `折叠「${group.name}」` : `展开「${group.name}」`} onClick={() => toggleGroup(group.key)}>
+              {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span className="preset-group-name">{group.key === UNCATEGORIZED_GROUP ? <FolderOpen size={15} /> : <FolderSearch size={15} />}{group.name}</span>
+              <span className="preset-group-count">{group.presets.length} 条</span>
+            </button>
+            {expanded && <div className="config-list group-list">{group.presets.map((preset) => <PresetRow
+              key={preset.id}
+              preset={preset}
+              profileName={config.profiles.find((item) => item.id === preset.profileId)?.name}
+              categoryName={group.key === UNCATEGORIZED_GROUP ? undefined : group.name}
+              onEdit={() => setPresetForm(preset)}
+              onDelete={async () => onChange(await window.desktopApi.deletePreset(preset.id))}
+            />)}</div>}
+          </div>
+        })}</div> : <div className="config-list">{accountPresets.map((preset) => <PresetRow
+          key={preset.id}
+          preset={preset}
+          profileName={config.profiles.find((item) => item.id === preset.profileId)?.name}
+          categoryName={categoryNameOf(preset.categoryId)}
+          onEdit={() => setPresetForm(preset)}
+          onDelete={async () => onChange(await window.desktopApi.deletePreset(preset.id))}
+        />)}</div>}
       </>}
     </section>}
 
@@ -1039,7 +1121,13 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
     </Modal>}
 
     {presetForm && <Modal title={config.presets.some((item) => item.id === presetForm.id) ? '编辑常用路径' : '添加常用路径'} onClose={() => setPresetForm(null)}>
-      <form onSubmit={async (event) => { event.preventDefault(); onChange(await window.desktopApi.savePreset(presetForm)); setPresetForm(null) }}>
+      <form onSubmit={async (event) => {
+        event.preventDefault()
+        const next = await window.desktopApi.savePreset(presetForm)
+        revealGroup(presetForm.categoryId || UNCATEGORIZED_GROUP)
+        onChange(next)
+        setPresetForm(null)
+      }}>
         <div className="form-grid">
           <Field label="路径名称"><input required value={presetForm.name} placeholder="例如：生产安装包" onChange={(e) => setPresetForm({ ...presetForm, name: e.target.value })} /></Field>
           {config.profiles.length > 1 ? <Field label="使用账号"><select required value={presetForm.profileId} onChange={(e) => setPresetForm({ ...presetForm, profileId: e.target.value })}>{config.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></Field> : <Field label="使用账号"><div className="account-reference"><Check size={15} />{config.profiles[0]?.name}</div></Field>}

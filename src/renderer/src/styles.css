@@ -202,6 +202,16 @@ h1, h2, p { margin: 0; }
 .path-filter > label { flex: none; color: #4f5b69; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .path-filter .select-wrap { width: 260px; }
 .path-count { color: #7b8794; font-size: 11px; }
+.path-filter .fold-all { margin-left: auto; }
+.preset-groups { display: grid; gap: 10px; }
+.preset-group { overflow: hidden; background: #fff; border: 1px solid var(--border); border-radius: 7px; }
+.preset-group-head { width: 100%; min-height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 15px; border: 0; color: #2f3d4d; background: #f7f9fb; cursor: pointer; font-size: 13px; text-align: left; }
+.preset-group-head:hover { background: #eef3f8; }
+.preset-group-head svg { flex: none; color: #7b8794; }
+.preset-group-name { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.preset-group-name svg { color: #168263; }
+.preset-group-count { margin-left: auto; color: #7b8794; font-size: 11px; }
+.preset-group .group-list { border: 0; border-top: 1px solid #e7ebef; border-radius: 0; }
 .category-add { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
 .category-add > input { width: 340px; height: 36px; padding: 0 11px; border: 1px solid #cdd5df; border-radius: 5px; color: #202c3a; background: #fff; font-size: 12px; }
 .category-add > input:focus { outline: 2px solid #8bb8f8; outline-offset: 1px; }
