@@ -55,6 +55,8 @@ export interface FolderTreeNode {
   size: number
   /** 文件夹为其下所有文件数量之和 */
   fileCount: number
+  /** 无权限或读取失败的目录数量 */
+  scanWarnings?: number
   children: FolderTreeNode[]
 }
 
@@ -88,9 +90,21 @@ export interface ListObjectsRequest {
   region?: string
 }
 
+export type ObjectConflictStrategy = 'overwrite' | 'skip'
+
+export interface ListObjectsPageRequest extends ListObjectsRequest {
+  marker?: string
+}
+
+export interface ListObjectsPage {
+  items: OssObjectItem[]
+  nextMarker?: string
+}
+
 export interface DownloadObjectsRequest extends ListObjectsRequest {
   keys: string[]
   folderKeys: string[]
+  conflictStrategy?: ObjectConflictStrategy
 }
 
 export interface OssMutationRequest {
@@ -117,6 +131,14 @@ export interface TransferObjectsRequest extends OssMutationRequest {
   /** 目标目录前缀（可为空 = Bucket 根目录） */
   destinationPrefix: string
   mode: 'copy' | 'move'
+  conflictStrategy?: ObjectConflictStrategy
+}
+
+export interface CreateFolderRequest extends OssMutationRequest {
+  /** 当前目录前缀 */
+  prefix: string
+  /** 新文件夹名称，不含 / */
+  name: string
 }
 
 export interface GetObjectUrlRequest extends OssMutationRequest {
@@ -142,6 +164,8 @@ export interface OpProgressEvent {
   current?: string
   /** 失败数量（删除等批量操作可能部分失败） */
   failed?: number
+  /** 跳过数量（下载或复制目标已存在时） */
+  skipped?: number
 }
 
 export interface DesktopApi {
@@ -166,12 +190,16 @@ export interface DesktopApi {
   collectFromPaths: (paths: string[]) => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
   cancelAllUploads: () => Promise<{ cancelled: number }>
+  setObjectOperationActive: (active: boolean) => Promise<void>
+  cancelObjectOperation: () => Promise<{ cancelled: boolean }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>
+  listObjectsPage: (request: ListObjectsPageRequest) => Promise<ListObjectsPage>
   listBuckets: (profileId: string) => Promise<OssBucketItem[]>
-  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number; failed: number; folderCount: number } | { cancelled: true }>
-  deleteObjects: (request: DeleteObjectsRequest) => Promise<{ deleted: number; failed: number }>
-  renameObject: (request: RenameObjectRequest) => Promise<{ key: string }>
-  transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number; failed: number }>
+  createFolder: (request: CreateFolderRequest) => Promise<{ key: string }>
+  downloadObjects: (request: DownloadObjectsRequest) => Promise<{ directory: string; count: number; failed: number; skipped: number; failedKeys: string[]; folderCount: number } | { cancelled: true }>
+  deleteObjects: (request: DeleteObjectsRequest) => Promise<{ deleted: number; failed: number; failedKeys: string[] }>
+  renameObject: (request: RenameObjectRequest) => Promise<{ key: string; failed: number; skipped: number; failedKeys: string[] }>
+  transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number; failed: number; skipped: number; failedKeys: string[] }>
   getObjectUrl: (request: GetObjectUrlRequest) => Promise<{ signed: string; publicUrl: string }>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void

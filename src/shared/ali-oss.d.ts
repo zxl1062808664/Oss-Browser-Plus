@@ -16,6 +16,7 @@ declare module 'ali-oss' {
   interface OSSClient {
     listBuckets(options?: Record<string, unknown>): Promise<{ buckets?: Array<{ name: string; region?: string; creationDate?: string | Date }> }>
     head(objectName: string): Promise<unknown>
+    put(objectName: string, content: Buffer | Uint8Array | string, options?: Record<string, unknown>): Promise<unknown>
     multipartUpload(objectName: string, filePath: string, options?: MultipartOptions): Promise<unknown>
     cancel(): void
     list(query: Record<string, unknown>): Promise<{ objects?: Array<{ name: string; size?: number; lastModified?: string | Date }>; prefixes?: string[]; isTruncated?: boolean; nextMarker?: string }>

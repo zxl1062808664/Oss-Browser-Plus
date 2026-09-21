@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import {
-  ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderSearch, Gauge, HardDriveUpload,
-  Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Pencil, Plus, RefreshCw, ScrollText, Settings, Trash2, Upload, X
+  ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderPlus, FolderSearch, Gauge, HardDriveUpload,
+  Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Moon, Pencil, Plus, RefreshCw, Search, ScrollText, Settings, Sun, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, FolderTreeNode, LocalUploadItem, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
+import type { AppConfig, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
 type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string; targetPresetId?: string }
 type LogEntry = { id: string; time: string; level: 'info' | 'success' | 'error'; message: string }
+type OperationResultState = { title: string; summary: string; failedKeys: string[] }
 
 const emptyConfig: AppConfig = { profiles: [], presets: [], categories: [], concurrentUploads: 3, conflictStrategy: 'overwrite' }
 const uid = () => crypto.randomUUID()
@@ -25,6 +26,15 @@ const fullPath = (preset?: UploadPreset) => preset ? `oss://${preset.bucket}/${n
 const UNCATEGORIZED_GROUP = '__uncategorized__'
 /** 常用路径分组的展开状态记忆（存展开的分组，新增分类默认折叠） */
 const EXPANDED_GROUPS_KEY = 'ossupload:expanded-path-groups'
+const THEME_KEY = 'ossupload:theme'
+type Theme = 'light' | 'dark'
+const loadTheme = (): Theme => {
+  try {
+    return window.localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
+}
 const loadExpandedGroups = (): string[] => {
   try {
     const raw = window.localStorage.getItem(EXPANDED_GROUPS_KEY)
@@ -37,6 +47,7 @@ const loadExpandedGroups = (): string[] => {
 
 function App() {
   const [page, setPage] = useState<Page>('upload')
+  const [theme, setTheme] = useState<Theme>(loadTheme)
   const [config, setConfig] = useState<AppConfig>(emptyConfig)
   const [selectedProfileId, setSelectedProfileId] = useState('')
   const [selectedPresetId, setSelectedPresetId] = useState('')
@@ -66,6 +77,15 @@ function App() {
   const failed = tasks.filter((task) => task.status === 'failed').length
   const totalSize = tasks.reduce((sum, task) => sum + task.size, 0)
   const totalProgress = totalSize ? Math.round(tasks.reduce((sum, task) => sum + task.size * task.progress / 100, 0) / totalSize * 100) : 0
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try {
+      window.localStorage.setItem(THEME_KEY, theme)
+    } catch {
+      // 本地存储不可用时，仅保留本次会话内的主题状态
+    }
+  }, [theme])
 
   useEffect(() => {
     window.desktopApi.getConfig().then((next) => {
@@ -293,9 +313,10 @@ function App() {
             config={config} initialProfileId={selectedProfileId} initialPresetId={selectedPresetId}
             uploadQueue={browseUploadQueue} setUploadQueue={setBrowseUploadQueue}
             uploadPendingRef={browseUploadPendingRef} uploading={browseUploading} setUploading={setBrowseUploading}
+            onLog={addLog}
           />
         ) : (
-          <SettingsPage config={config} onChange={applyConfig} />
+          <SettingsPage config={config} onChange={applyConfig} theme={theme} onThemeChange={setTheme} />
         )}
       </main>
       {folderPicker && <FolderPickerModal
@@ -330,11 +351,12 @@ function App() {
   )
 }
 
-function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, setUploadQueue, uploadPendingRef, uploading, setUploading }: {
+function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, setUploadQueue, uploadPendingRef, uploading, setUploading, onLog }: {
   config: AppConfig; initialProfileId: string; initialPresetId: string
-  /** 以下 5 项由 App 层持有并传入，切换页面时不会丢失 */
+  /** 上传队列由 App 层持有并传入，切换页面时不会丢失 */
   uploadQueue: UploadTask[]; setUploadQueue: (value: UploadTask[] | ((queue: UploadTask[]) => UploadTask[])) => void
   uploadPendingRef: { current: UploadTask[] }; uploading: boolean; setUploading: (value: boolean) => void
+  onLog: (level: LogEntry['level'], message: string) => void
 }) {
   const [mode, setMode] = useState<'account' | 'preset'>('preset')
   const [profileId, setProfileId] = useState(initialProfileId)
@@ -344,14 +366,25 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   const [currentPrefix, setCurrentPrefix] = useState('')
   const [objects, setObjects] = useState<OssObjectItem[]>([])
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
+  const [objectQuery, setObjectQuery] = useState('')
+  const [objectKind, setObjectKind] = useState<'all' | 'file' | 'folder'>('all')
+  const [objectSort, setObjectSort] = useState<'name' | 'size' | 'lastModified'>('name')
+  const [nextMarker, setNextMarker] = useState<string | undefined>()
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [downloadConflictStrategy, setDownloadConflictStrategy] = useState<ObjectConflictStrategy>('overwrite')
   const [notice, setNotice] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
   const [busyOp, setBusyOp] = useState(false)
   const [opProgress, setOpProgress] = useState<OpProgressEvent | null>(null)
   const [opLabel, setOpLabel] = useState('正在处理')
+  const [opActive, setOpActive] = useState(false)
+  const [opCancellable, setOpCancellable] = useState(false)
+  const [cancellingOp, setCancellingOp] = useState(false)
+  const [operationResult, setOperationResult] = useState<OperationResultState | null>(null)
   const [renaming, setRenaming] = useState<OssObjectItem | null>(null)
+  const [creatingFolder, setCreatingFolder] = useState(false)
   const [transferTarget, setTransferTarget] = useState<'copy' | 'move' | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<OssObjectItem[] | null>(null)
   const [urlItem, setUrlItem] = useState<{ key: string; signed: string; publicUrl: string } | null>(null)
@@ -419,6 +452,19 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   const bucketName = mode === 'account' ? selectedBucket : preset?.bucket || ''
   const bucketRegion = mode === 'account' ? buckets.find((item) => item.name === selectedBucket)?.region : undefined
   const atBucketList = mode === 'account' && !selectedBucket
+  const operationBusy = busyOp || downloading || uploading || loading || loadingMore
+  const visibleObjects = useMemo(() => {
+    const query = objectQuery.trim().toLocaleLowerCase('zh-CN')
+    return objects
+      .filter((item) => (objectKind === 'all' || (objectKind === 'folder' ? item.isFolder : !item.isFolder)) && (!query || item.name.toLocaleLowerCase('zh-CN').includes(query)))
+      .sort((a, b) => {
+        const folderOrder = Number(b.isFolder) - Number(a.isFolder)
+        if (folderOrder) return folderOrder
+        if (objectSort === 'size') return b.size - a.size || a.name.localeCompare(b.name)
+        if (objectSort === 'lastModified') return (Date.parse(b.lastModified || '') || 0) - (Date.parse(a.lastModified || '') || 0) || a.name.localeCompare(b.name)
+        return a.name.localeCompare(b.name)
+      })
+  }, [objectKind, objectQuery, objectSort, objects])
   // 路径分段：预设模式下也允许向上浏览到预设根目录之上（直到 Bucket 根目录），
   // withinPreset 用于判断当前位置是否仍在预设路径范围内。
   const rootSegments = mode === 'preset' && rootPrefix ? rootPrefix.split('/') : []
@@ -470,9 +516,15 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
     }
     let cancelled = false
     setLoading(true)
+    setNextMarker(undefined)
     const request = atBucketList
       ? window.desktopApi.listBuckets(profile.id).then((items) => { if (!cancelled) { setBuckets(items); setObjects([]) } })
-      : window.desktopApi.listObjects({ profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion }).then((items) => { if (!cancelled) setObjects(items) })
+      : window.desktopApi.listObjectsPage({ profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion }).then((page) => {
+        if (!cancelled) {
+          setObjects(page.items)
+          setNextMarker(page.nextMarker)
+        }
+      })
     request
       .catch((error) => { if (!cancelled) setNotice(error instanceof Error ? error.message : '读取 OSS 目录失败') })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -491,9 +543,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   }
 
   const downloadSelected = async () => {
-    if (!profile || !bucketName || !selectedKeys.length) return
+    if (!profile || !bucketName || !selectedKeys.length || operationBusy) return
     setDownloading(true)
-    beginOp('下载')
+    beginOp('下载', true)
     setNotice('正在准备下载...')
     try {
       const selectedItems = objects.filter((item) => selectedKeys.includes(item.key))
@@ -503,16 +555,27 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         prefix: currentPrefix,
         region: bucketRegion,
         keys: selectedItems.filter((item) => !item.isFolder).map((item) => item.key),
-        folderKeys: selectedItems.filter((item) => item.isFolder).map((item) => item.key)
+        folderKeys: selectedItems.filter((item) => item.isFolder).map((item) => item.key),
+        conflictStrategy: downloadConflictStrategy
       })
-      if ('cancelled' in result) setNotice('已取消选择下载目录')
-      else setNotice(`已下载 ${result.count} 个文件${result.failed ? `，${result.failed} 个失败` : ''}${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`)
-      setSelectedKeys([])
+      if ('cancelled' in result) {
+        setNotice('已取消选择下载目录')
+      } else {
+        const message = `已下载 ${result.count} 个文件${result.skipped ? `，跳过 ${result.skipped} 个同名文件` : ''}${result.failed ? `，${result.failed} 个失败` : ''}${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`
+        setNotice(message)
+        onLog(result.failed ? 'error' : 'success', message)
+        logFailedKeys('下载', result.failedKeys)
+        showOperationResult('下载失败详情', message, result.failedKeys)
+        setSelectedKeys([])
+      }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '下载失败')
+      const message = error instanceof Error ? error.message : '下载失败'
+      setNotice(message)
+      onLog(message.startsWith('操作已取消') ? 'info' : 'error', message.startsWith('操作已取消') ? message : `下载失败：${message}`)
     } finally {
       setDownloading(false)
       setOpProgress(null)
+      endOp()
     }
   }
 
@@ -520,30 +583,114 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
 
   const refreshObjects = () => setRefreshKey((value) => value + 1)
 
+  const loadMoreObjects = async () => {
+    if (!profile || !bucketName || !nextMarker || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const page = await window.desktopApi.listObjectsPage({
+        profileId: profile.id, bucket: bucketName, prefix: currentPrefix, region: bucketRegion, marker: nextMarker
+      })
+      setObjects((current) => {
+        const known = new Set(current.map((item) => item.key))
+        return [...current, ...page.items.filter((item) => !known.has(item.key))]
+      })
+      setNextMarker(page.nextMarker)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '加载更多对象失败')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
   /** 开始一个批量操作：设置标签并清空上一次的进度 */
-  const beginOp = (label: string) => {
+  const beginOp = (label: string, cancellable = false) => {
     setOpLabel(label)
     setOpProgress(null)
+    setOpActive(true)
+    setOpCancellable(cancellable)
+    setCancellingOp(false)
+    if (cancellable) void window.desktopApi.setObjectOperationActive(true)
+  }
+
+  const endOp = () => {
+    setOpActive(false)
+    setOpCancellable(false)
+    setCancellingOp(false)
+    void window.desktopApi.setObjectOperationActive(false)
+  }
+
+  const cancelCurrentOperation = async () => {
+    if (!opCancellable || cancellingOp) return
+    setCancellingOp(true)
+    await window.desktopApi.cancelObjectOperation()
+  }
+
+  const showOperationResult = (title: string, summary: string, failedKeys: string[]) => {
+    if (failedKeys.length) setOperationResult({ title, summary, failedKeys })
+  }
+
+  const logFailedKeys = (action: string, keys: string[]) => {
+    if (!keys.length) return
+    const visible = keys.slice(0, 20).join('、')
+    onLog('error', `${action}失败对象：${visible}${keys.length > 20 ? `，另有 ${keys.length - 20} 项` : ''}`)
   }
 
   const openRename = (item: OssObjectItem) => setRenaming(item)
 
+  const confirmCreateFolder = async (name: string) => {
+    if (!profile || !bucketName) return
+    setBusyOp(true)
+    beginOp('新建文件夹')
+    let succeeded = false
+    try {
+      const result = await window.desktopApi.createFolder({
+        profileId: profile.id, bucket: bucketName, region: bucketRegion, prefix: currentPrefix, name
+      })
+      const message = `已创建文件夹：${result.key}`
+      setNotice(message)
+      onLog('success', message)
+      refreshObjects()
+      succeeded = true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '新建文件夹失败'
+      setNotice(message)
+      onLog('error', `新建文件夹失败：${message}`)
+    } finally {
+      setBusyOp(false)
+      setOpProgress(null)
+      endOp()
+      if (succeeded) setCreatingFolder(false)
+    }
+  }
+
   const confirmRename = async (newName: string) => {
     if (!renaming || !profile || !bucketName) return
     setBusyOp(true)
-    beginOp('重命名')
+    beginOp('重命名', true)
+    let completed = false
     try {
       const result = await window.desktopApi.renameObject({
         profileId: profile.id, bucket: bucketName, region: bucketRegion, key: renaming.key, newName
       })
-      setNotice(`已重命名为：${result.key}`)
+      const message = result.failed
+        ? `重命名部分完成：${result.failed} 个对象处理失败`
+        : `已重命名为：${result.key}`
+      setNotice(message)
+      onLog(result.failed ? 'error' : 'success', message)
+      logFailedKeys('重命名', result.failedKeys)
+      showOperationResult('重命名失败详情', message, result.failedKeys)
+      setSelectedKeys([])
       refreshObjects()
+      completed = true
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '重命名失败')
+      const message = error instanceof Error ? error.message : '重命名失败'
+      setNotice(message)
+      onLog(message.startsWith('操作已取消') ? 'info' : 'error', message.startsWith('操作已取消') ? message : `重命名失败：${message}`)
     } finally {
       setBusyOp(false)
       setOpProgress(null)
-      setRenaming(null)
+      endOp()
+      if (completed) setRenaming(null)
     }
   }
 
@@ -552,44 +699,58 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   const confirmDelete = async () => {
     if (!confirmingDelete || !profile || !bucketName) return
     setBusyOp(true)
-    beginOp('删除')
+    beginOp('删除', true)
     try {
       const result = await window.desktopApi.deleteObjects({
         profileId: profile.id, bucket: bucketName, region: bucketRegion,
         keys: confirmingDelete.map((item) => item.key)
       })
-      setNotice(`已删除 ${result.deleted} 个对象${result.failed ? `，${result.failed} 个失败` : ''}`)
+      const message = `已删除 ${result.deleted} 个对象${result.failed ? `，${result.failed} 个失败` : ''}`
+      setNotice(message)
+      onLog(result.failed ? 'error' : 'success', message)
+      logFailedKeys('删除', result.failedKeys)
+      showOperationResult('删除失败详情', message, result.failedKeys)
       setSelectedKeys([])
       refreshObjects()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '删除失败')
+      const message = error instanceof Error ? error.message : '删除失败'
+      setNotice(message)
+      onLog(message.startsWith('操作已取消') ? 'info' : 'error', message.startsWith('操作已取消') ? message : `删除失败：${message}`)
     } finally {
       setBusyOp(false)
       setOpProgress(null)
+      endOp()
       setConfirmingDelete(null)
     }
   }
 
   const requestTransfer = (mode: 'copy' | 'move') => setTransferTarget(mode)
 
-  const confirmTransfer = async (destinationPrefix: string) => {
+  const confirmTransfer = async (destinationPrefix: string, conflictStrategy: ObjectConflictStrategy) => {
     if (!transferTarget || !selectedKeys.length || !profile || !bucketName) return
     setBusyOp(true)
     const action = transferTarget === 'copy' ? '复制' : '移动'
-    beginOp(action)
+    beginOp(action, true)
     try {
       const result = await window.desktopApi.transferObjects({
         profileId: profile.id, bucket: bucketName, region: bucketRegion,
-        sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget
+        sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget, conflictStrategy
       })
-      setNotice(`${action}完成：共 ${result.count} 个对象${result.failed ? `，${result.failed} 个失败` : ''}`)
+      const message = `${action}完成：${result.count} 个成功${result.skipped ? `，${result.skipped} 个同名对象已跳过` : ''}${result.failed ? `，${result.failed} 个失败` : ''}`
+      setNotice(message)
+      onLog(result.failed ? 'error' : 'success', message)
+      logFailedKeys(action, result.failedKeys)
+      showOperationResult(`${action}失败详情`, message, result.failedKeys)
       setSelectedKeys([])
       refreshObjects()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : `${action}失败`)
+      const message = error instanceof Error ? error.message : `${action}失败`
+      setNotice(message)
+      onLog(message.startsWith('操作已取消') ? 'info' : 'error', message.startsWith('操作已取消') ? message : `${action}失败：${message}`)
     } finally {
       setBusyOp(false)
       setOpProgress(null)
+      endOp()
       setTransferTarget(null)
     }
   }
@@ -676,7 +837,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
     await Promise.all(Array.from({ length: config.concurrentUploads }, worker))
     uploadPendingRef.current = []
     setUploading(false)
-    setNotice(`上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+    const message = `上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`
+    setNotice(message)
+    onLog(failedCount ? 'error' : 'success', message)
     refreshObjects()
   }
 
@@ -701,7 +864,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   }
 
   const toggleItem = (key: string, checked: boolean) => setSelectedKeys((current) => checked ? [...new Set([...current, key])] : current.filter((item) => item !== key))
-  const selectAll = (checked: boolean) => setSelectedKeys(checked ? objects.map((item) => item.key) : [])
+  const selectAll = (checked: boolean) => setSelectedKeys(checked ? visibleObjects.map((item) => item.key) : [])
   const selectedItem = selectedKeys.length === 1 ? objects.find((item) => item.key === selectedKeys[0]) : undefined
   const goUp = () => {
     if (mode === 'account' && selectedBucket && !currentPrefix) {
@@ -739,6 +902,13 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         <button className="secondary compact" disabled={uploading} onClick={uploadFolderToDir}><FolderOpen size={15} />上传文件夹</button>
         {uploadQueue.some((item) => item.status === 'waiting') && <button className="primary compact" disabled={uploading} onClick={startBrowseUpload}><Upload size={15} />开始上传（{uploadQueue.filter((item) => item.status === 'waiting').length}）</button>}
       </div>}
+      {!atBucketList && <div className="browse-filter-bar">
+        <label className="object-search"><Search size={15} /><input value={objectQuery} placeholder="搜索当前已加载目录" onChange={(event) => { setObjectQuery(event.target.value); setSelectedKeys([]) }} /></label>
+        <label className="browse-option"><span>类型</span><select value={objectKind} onChange={(event) => { setObjectKind(event.target.value as typeof objectKind); setSelectedKeys([]) }}><option value="all">全部</option><option value="folder">文件夹</option><option value="file">文件</option></select></label>
+        <label className="browse-option"><span>排序</span><select value={objectSort} onChange={(event) => setObjectSort(event.target.value as typeof objectSort)}><option value="name">名称</option><option value="size">大小</option><option value="lastModified">修改时间</option></select></label>
+        <label className="browse-option"><span>下载同名</span><select value={downloadConflictStrategy} disabled={operationBusy} onChange={(event) => setDownloadConflictStrategy(event.target.value as ObjectConflictStrategy)}><option value="overwrite">覆盖</option><option value="skip">跳过</option></select></label>
+        <span className="loaded-count">已加载 {objects.length} 项{nextMarker ? '，还有更多' : ''}</span>
+      </div>}
       <section className="browse-band"><div className="breadcrumbs">
         <button disabled={!canGoUp} title="返回上级目录" onClick={goUp}><ArrowUp size={15} />返回上级</button>
         {atBucketList ? <span>Bucket 列表</span> : <div className="crumb-path">
@@ -750,14 +920,19 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
             : <button className="crumb" onClick={() => goToCrumb(index)}>{segment}</button>}</span>)}
           {!crumbSegments.length && <span className="crumb-hint">根目录</span>}
         </div>}
-      </div>{!atBucketList && <div className="browse-actions"><label className="select-all"><input type="checkbox" checked={objects.length > 0 && selectedKeys.length === objects.length} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedItem || busyOp} onClick={() => selectedItem && openRename(selectedItem)}><Pencil size={15} />重命名</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || busyOp} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || busyOp} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || downloading || busyOp} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
-      {(busyOp || downloading) && <OpProgressBar label={opLabel} progress={opProgress} />}
+      </div>{!atBucketList && <div className="browse-actions"><button className="secondary compact" disabled={operationBusy} onClick={() => setCreatingFolder(true)}><FolderPlus size={15} />新建文件夹</button><label className="select-all"><input type="checkbox" checked={visibleObjects.length > 0 && visibleObjects.every((item) => selectedKeys.includes(item.key))} disabled={operationBusy} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedItem || operationBusy} onClick={() => selectedItem && openRename(selectedItem)}><Pencil size={15} />重命名</button><button className="secondary compact" disabled={!selectedKeys.length || operationBusy} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || operationBusy} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || operationBusy} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || operationBusy} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
+      {opActive && <OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} />}
       {notice && <div className="browse-notice">{notice}</div>}
-      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !objects.length ? <div className="object-empty"><FolderOpen size={25} /><span>当前目录为空</span></div> : objects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={busyOp} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={busyOp} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={busyOp} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
+      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !visibleObjects.length ? <div className="object-empty"><FolderOpen size={25} /><span>{objectQuery.trim() ? '没有匹配的文件或文件夹' : '当前目录为空'}</span></div> : visibleObjects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder && setCurrentPrefix(object.key.replace(/\/+$/, ''))}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={operationBusy} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={operationBusy} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={operationBusy} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} disabled={operationBusy} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
+      {!atBucketList && nextMarker && <div className="load-more-row"><button className="secondary compact" disabled={loadingMore || operationBusy} onClick={loadMoreObjects}>{loadingMore ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}{loadingMore ? '加载中…' : '加载更多对象'}</button></div>}
       </>}
+    {creatingFolder && <Modal title="新建文件夹" onClose={() => !busyOp && setCreatingFolder(false)}>
+      <FolderNameForm busy={busyOp} onCancel={() => setCreatingFolder(false)} onConfirm={confirmCreateFolder} />
+      {busyOp && <div className="op-form"><OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} /></div>}
+    </Modal>}
     {renaming && <Modal title="重命名" onClose={() => !busyOp && setRenaming(null)}>
       <RenameForm item={renaming} busy={busyOp} onCancel={() => setRenaming(null)} onConfirm={confirmRename} />
-      {busyOp && <div className="op-form"><OpProgressBar label={opLabel} progress={opProgress} /></div>}
+      {busyOp && <div className="op-form"><OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} /></div>}
     </Modal>}
     {transferTarget && <Modal title={transferTarget === 'copy' ? '复制到目录' : '移动到目录'} onClose={() => !busyOp && setTransferTarget(null)}>
       <OssFolderPicker
@@ -770,15 +945,22 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         onCancel={() => setTransferTarget(null)}
         onSelect={confirmTransfer}
       />
-      {busyOp && <div className="op-form"><OpProgressBar label={opLabel} progress={opProgress} /></div>}
+      {busyOp && <div className="op-form"><OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} /></div>}
     </Modal>}
     {confirmingDelete && <Modal title="确认删除" onClose={() => !busyOp && setConfirmingDelete(null)}>
       <div className="op-form">
         <p className="op-warn">即将删除以下 {confirmingDelete.length} 项，此操作不可恢复：</p>
         <div className="op-target-list">{confirmingDelete.map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}</div>
         {confirmingDelete.some((item) => item.isFolder) && <p className="op-warn">包含文件夹，其下所有对象都会被一并删除。</p>}
-        {busyOp && <OpProgressBar label={opLabel} progress={opProgress} />}
+        {busyOp && <OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} />}
         <div className="op-actions"><button type="button" className="text-button" disabled={busyOp} onClick={() => setConfirmingDelete(null)}>取消</button><button className="primary danger" disabled={busyOp} onClick={confirmDelete}><Trash2 size={16} />{busyOp ? '删除中…' : '确认删除'}</button></div>
+      </div>
+    </Modal>}
+    {operationResult && <Modal title={operationResult.title} onClose={() => setOperationResult(null)}>
+      <div className="op-form">
+        <p className="op-tip">{operationResult.summary}</p>
+        <div className="op-target-list">{operationResult.failedKeys.map((key) => <code key={key}>{key}</code>)}</div>
+        <div className="op-actions"><button type="button" className="secondary compact" onClick={async () => { await window.desktopApi.copyText(operationResult.failedKeys.join('\n')); setNotice('失败对象列表已复制') }}><Clipboard size={14} />复制失败列表</button><button type="button" className="primary" onClick={() => setOperationResult(null)}>关闭</button></div>
       </div>
     </Modal>}
     {urlItem && <Modal title="对象地址" wide onClose={() => setUrlItem(null)}>
@@ -967,7 +1149,7 @@ function PresetRow({ preset, profileName, categoryName, onEdit, onDelete }: {
   </div>
 }
 
-function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (config: AppConfig) => void }) {
+function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppConfig; onChange: (config: AppConfig) => void; theme: Theme; onThemeChange: (theme: Theme) => void }) {
   const [tab, setTab] = useState<'oss' | 'paths' | 'categories' | 'upload'>('oss')
   const [profileForm, setProfileForm] = useState<ProfileInput | null>(null)
   const [presetForm, setPresetForm] = useState<UploadPreset | null>(null)
@@ -1096,7 +1278,7 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
       })}</div>}
     </section>}
 
-    {tab === 'upload' && <UploadPreferences config={config} onChange={onChange} />}
+    {tab === 'upload' && <UploadPreferences config={config} onChange={onChange} theme={theme} onThemeChange={onThemeChange} />}
 
     {deletingCategory && <Modal title="删除分类" onClose={() => setDeletingCategory(null)}>
       <div className="op-form">
@@ -1144,12 +1326,13 @@ function SettingsPage({ config, onChange }: { config: AppConfig; onChange: (conf
   </>
 }
 
-function UploadPreferences({ config, onChange }: { config: AppConfig; onChange: (config: AppConfig) => void }) {
+function UploadPreferences({ config, onChange, theme, onThemeChange }: { config: AppConfig; onChange: (config: AppConfig) => void; theme: Theme; onThemeChange: (theme: Theme) => void }) {
   const [concurrentUploads, setConcurrentUploads] = useState(config.concurrentUploads)
   const [conflictStrategy, setConflictStrategy] = useState(config.conflictStrategy)
   const changed = concurrentUploads !== config.concurrentUploads || conflictStrategy !== config.conflictStrategy
   return <section className="settings-section preferences">
     <div className="section-heading"><div><h2>上传设置</h2><span>控制并发任务和同名文件处理方式</span></div></div>
+    <div className="preference-row"><div><strong>界面主题</strong><span>选择应用的浅色或深色显示风格</span></div><div className="segmented theme-switch"><button className={theme === 'light' ? 'active' : ''} onClick={() => onThemeChange('light')}><Sun size={14} />浅色</button><button className={theme === 'dark' ? 'active' : ''} onClick={() => onThemeChange('dark')}><Moon size={14} />深色</button></div></div>
     <div className="preference-row"><div><strong>同时上传任务数</strong><span>建议保持在 2 到 4 个，以兼顾速度与稳定性</span></div><div className="stepper"><button onClick={() => setConcurrentUploads(Math.max(1, concurrentUploads - 1))}>−</button><b>{concurrentUploads}</b><button onClick={() => setConcurrentUploads(Math.min(8, concurrentUploads + 1))}>+</button></div></div>
     <div className="preference-row"><div><strong>同名文件</strong><span>目标位置已存在同名对象时的处理方式</span></div><div className="segmented"><button className={conflictStrategy === 'overwrite' ? 'active' : ''} onClick={() => setConflictStrategy('overwrite')}>覆盖</button><button className={conflictStrategy === 'skip' ? 'active' : ''} onClick={() => setConflictStrategy('skip')}>跳过</button></div></div>
     <div className="save-bar"><button className="primary" disabled={!changed} onClick={async () => onChange(await window.desktopApi.savePreferences({ concurrentUploads, conflictStrategy }))}>保存设置</button></div>
@@ -1177,12 +1360,13 @@ function TargetPickerModal({ config, primaryId, selectedIds, onClose, onSave }: 
 }
 
 /** 批量操作（删除 / 复制 / 移动 / 下载 / 重命名）的统一进度条 */
-function OpProgressBar({ label, progress }: { label: string; progress: OpProgressEvent | null }) {
+function OpProgressBar({ label, progress, onCancel, cancelling }: { label: string; progress: OpProgressEvent | null; onCancel?: () => void; cancelling?: boolean }) {
   // total 为 0 表示还处在扫描阶段，此时只显示提示文案
   const scanning = !progress || !progress.total
   const done = progress?.done ?? 0
   const total = progress?.total ?? 0
   const failed = progress?.failed ?? 0
+  const skipped = progress?.skipped ?? 0
   const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0
   const currentName = progress?.current ? progress.current.split('/').filter(Boolean).pop() : ''
 
@@ -1192,9 +1376,10 @@ function OpProgressBar({ label, progress }: { label: string; progress: OpProgres
         <LoaderCircle className="spin" size={14} />
         {scanning
           ? (progress?.current || `${label}：正在准备…`)
-          : `${label}中 ${done}/${total}${failed ? `（失败 ${failed}）` : ''}`}
+          : `${label}中 ${done}/${total}${skipped ? `（跳过 ${skipped}）` : ''}${failed ? `（失败 ${failed}）` : ''}`}
       </span>
       {!scanning && currentName && <span className="op-progress-file" title={progress?.current}>{currentName}</span>}
+      {onCancel && <button type="button" className="text-button op-cancel" disabled={cancelling} onClick={onCancel}><CircleStop size={13} />{cancelling ? '正在取消…' : '取消操作'}</button>}
     </div>
     <div className="op-progress-track"><div className={`op-progress-bar${failed ? ' has-failed' : ''}`} style={{ width: `${percent}%` }} /></div>
   </div>
@@ -1316,6 +1501,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   return <Modal title="选择要上传的文件夹" wide onClose={onClose}>
     <div className="folder-picker">
       <p className="folder-picker-hint">已读取本地项目根目录，勾选其中要上传的版本 / 子文件夹（可多选）。上传到 OSS 后会按 <b>版本名 / 子目录</b> 的结构保留层级，例如 <code>v1.0/build/app.zip</code>。</p>
+      {Boolean(tree.scanWarnings) && <p className="scan-warning">有 {tree.scanWarnings} 个目录因权限或读取错误未能扫描，这些目录不会进入上传队列。</p>}
       <div className="folder-picker-toolbar">
         <span className="folder-root" title={root}>{root}</span>
         <div className="folder-toolbar-actions">
@@ -1386,6 +1572,14 @@ function FolderTreeBranch({ node, depth, expanded, checked, onToggleExpand, onTo
   </>
 }
 
+function FolderNameForm({ busy, onCancel, onConfirm }: { busy: boolean; onCancel: () => void; onConfirm: (name: string) => void }) {
+  const [name, setName] = useState('')
+  return <form className="op-form" onSubmit={(event) => { event.preventDefault(); if (name.trim() && !busy) onConfirm(name.trim()) }}>
+    <Field label="文件夹名称"><input autoFocus value={name} disabled={busy} placeholder="例如：release-2025" onChange={(event) => setName(event.target.value)} /></Field>
+    <div className="op-actions"><button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy || !name.trim()}><FolderPlus size={16} />创建</button></div>
+  </form>
+}
+
 function RenameForm({ item, busy, onCancel, onConfirm }: { item: OssObjectItem; busy: boolean; onCancel: () => void; onConfirm: (name: string) => void }) {
   const [name, setName] = useState(item.name)
   return <form className="op-form" onSubmit={(event) => { event.preventDefault(); if (name.trim() && !busy) onConfirm(name.trim()) }}>
@@ -1404,7 +1598,7 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
   items: OssObjectItem[]
   busy: boolean
   onCancel: () => void
-  onSelect: (prefix: string) => void
+  onSelect: (prefix: string, conflictStrategy: ObjectConflictStrategy) => void
 }) {
   const [currentPrefix, setCurrentPrefix] = useState('')
   const [folders, setFolders] = useState<OssObjectItem[]>([])
@@ -1412,6 +1606,9 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [conflictStrategy, setConflictStrategy] = useState<ObjectConflictStrategy>('skip')
+  const [newFolderName, setNewFolderName] = useState('')
+  const [creatingDestination, setCreatingDestination] = useState(false)
   const action = mode === 'copy' ? '复制' : '移动'
 
   useEffect(() => {
@@ -1435,6 +1632,21 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
     setCurrentPrefix(currentPrefix.includes('/') ? currentPrefix.slice(0, currentPrefix.lastIndexOf('/')) : '')
   }
 
+  const createDestinationFolder = async () => {
+    if (!newFolderName.trim() || creatingDestination) return
+    setCreatingDestination(true)
+    setError('')
+    try {
+      await window.desktopApi.createFolder({ profileId, bucket, region, prefix: currentPrefix, name: newFolderName.trim() })
+      setNewFolderName('')
+      setRefreshKey((value) => value + 1)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '新建文件夹失败')
+    } finally {
+      setCreatingDestination(false)
+    }
+  }
+
   return <div className="op-form">
     <p className="op-tip">{action}以下 {items.length} 项到所选目录（文件夹会包含其下所有内容）：</p>
     <div className="op-target-list">{items.slice(0, 6).map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}{items.length > 6 && <code>…等 {items.length} 项</code>}</div>
@@ -1446,6 +1658,7 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
         <button type="button" className="icon-button small" title="刷新目录" disabled={busy || loading} onClick={() => setRefreshKey((value) => value + 1)}><RefreshCw size={14} /></button>
       </div>
     </div>
+    <div className="picker-create"><input value={newFolderName} disabled={busy || creatingDestination} placeholder="在当前目录新建文件夹" onChange={(event) => setNewFolderName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); createDestinationFolder() } }} /><button type="button" className="secondary compact" disabled={busy || creatingDestination || !newFolderName.trim()} onClick={createDestinationFolder}>{creatingDestination ? <LoaderCircle className="spin" size={14} /> : <FolderPlus size={14} />}新建</button></div>
 
     <div className="picker-dirs">
       {loading ? <div className="picker-empty"><LoaderCircle className="spin" size={18} />正在读取目录...</div>
@@ -1454,12 +1667,13 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
         : folders.map((folder) => <button type="button" key={folder.key} className="picker-dir" disabled={busy} onClick={() => setCurrentPrefix(folder.key.replace(/\/+$/, ''))}><FolderOpen size={16} /><span>{folder.name}</span><ChevronRight size={13} /></button>)}
     </div>
     {!loading && !error && <div className="picker-filecount">本目录包含 {fileCount} 个文件；选中的 {items.length} 项将以各自的名称进入所选目录内。</div>}
+    <div className="op-option-row"><span>目标存在同名对象</span><div className="segmented"><button type="button" className={conflictStrategy === 'skip' ? 'active' : ''} onClick={() => setConflictStrategy('skip')}>跳过</button><button type="button" className={conflictStrategy === 'overwrite' ? 'active' : ''} onClick={() => setConflictStrategy('overwrite')}>覆盖</button></div></div>
 
     {mode === 'move' && <p className="op-warn">移动完成后，原位置的对象会被删除。</p>}
 
     <div className="op-actions">
       <button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button>
-      <button type="button" className="primary" disabled={busy || loading} onClick={() => onSelect(currentPrefix)}><Check size={16} />选择当前目录</button>
+      <button type="button" className="primary" disabled={busy || loading} onClick={() => onSelect(currentPrefix, conflictStrategy)}><Check size={16} />选择当前目录</button>
     </div>
   </div>
 }
