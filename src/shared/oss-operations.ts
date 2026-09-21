@@ -64,3 +64,25 @@ export function buildTransferPairs(sourceKey: string, objectKeys: string[], dest
     return { source: objectKey, target }
   })
 }
+
+/** 支持双击预览的扩展名分类（主进程据此限制读取，渲染层据此决定双击是预览还是提示不支持） */
+const TEXT_PREVIEW_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'log', 'json', 'jsonl', 'ndjson', 'xml', 'yaml', 'yml', 'csv', 'tsv',
+  'html', 'htm', 'css', 'scss', 'less', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'vue',
+  'py', 'java', 'kt', 'go', 'rs', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'rb', 'sh', 'bat', 'cmd', 'ps1',
+  'sql', 'ini', 'cfg', 'conf', 'config', 'properties', 'toml', 'env', 'plist', 'diff', 'patch',
+  'gitignore', 'dockerfile', 'lock'
+])
+const IMAGE_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
+
+export type ObjectPreviewKind = 'text' | 'image'
+
+/** 按文件名（或对象 key）的扩展名判断预览类型；不支持预览时返回 null */
+export function classifyObjectPreview(name: string): ObjectPreviewKind | null {
+  const base = name.split('/').pop() || name
+  const dot = base.lastIndexOf('.')
+  const ext = dot >= 0 ? base.slice(dot + 1).toLowerCase() : ''
+  if (TEXT_PREVIEW_EXTENSIONS.has(ext)) return 'text'
+  if (IMAGE_PREVIEW_EXTENSIONS.has(ext)) return 'image'
+  return null
+}

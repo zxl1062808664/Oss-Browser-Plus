@@ -147,6 +147,15 @@ export interface GetObjectUrlRequest extends OssMutationRequest {
   expires?: number
 }
 
+export interface PreviewObjectRequest extends OssMutationRequest {
+  key: string
+}
+
+/** 文件预览结果：文本按 UTF-8 解码后返回，图片返回 base64（渲染层拼 data URL） */
+export type ObjectPreview =
+  | { kind: 'text'; content: string }
+  | { kind: 'image'; mimeType: string; base64: string }
+
 export interface UploadProgressEvent {
   taskId: string
   percent: number
@@ -201,6 +210,7 @@ export interface DesktopApi {
   renameObject: (request: RenameObjectRequest) => Promise<{ key: string; failed: number; skipped: number; failedKeys: string[] }>
   transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number; failed: number; skipped: number; failedKeys: string[] }>
   getObjectUrl: (request: GetObjectUrlRequest) => Promise<{ signed: string; publicUrl: string }>
+  previewObject: (request: PreviewObjectRequest) => Promise<ObjectPreview>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
   onOpProgress: (callback: (event: OpProgressEvent) => void) => () => void

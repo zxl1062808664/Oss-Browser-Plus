@@ -5,8 +5,8 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, PathCategory, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
-import { buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, normalizeObjectPrefix } from '../shared/oss-operations'
+import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
+import { buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, normalizeObjectPrefix } from '../shared/oss-operations'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -302,6 +302,53 @@ function objectPublicUrl(bucket: string, region: string, endpoint: string, key: 
   const host = region ? `${region}.aliyuncs.com` : endpoint
   const encodedKey = key.split('/').map(encodeURIComponent).join('/')
   return `https://${bucket}.${host}/${encodedKey}`
+}
+
+/** 双击预览的大小上限：文本超限提示下载查看，避免拉大文件；图片放宽到 20MB */
+const TEXT_PREVIEW_LIMIT = 1024 * 1024
+const IMAGE_PREVIEW_LIMIT = 20 * 1024 * 1024
+
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif'
+}
+
+/** 读取对象内容用于预览：先 HEAD 拿大小再决定是否下载，防止无脑拉取大对象 */
+async function previewObject(request: PreviewObjectRequest): Promise<ObjectPreview> {
+  const config = await readConfig()
+  const profile = config.profiles.find((item) => item.id === request.profileId)
+  if (!profile) throw new Error('OSS 配置不存在')
+  if (request.key.endsWith('/')) throw new Error('文件夹不支持预览')
+  const kind = classifyObjectPreview(request.key)
+  if (!kind) throw new Error('该文件类型暂不支持预览')
+  const client = createClient(profile, request.bucket, undefined, request.region)
+  let size = 0
+  try {
+    const head = await withRetry(() => client.head(request.key))
+    size = Number(head.res?.headers?.['content-length'] || 0)
+  } catch (error) {
+    if ((error as { status?: number }).status === 404) throw new Error('对象不存在或已被删除')
+    throw error
+  }
+  if (kind === 'text') {
+    if (size > TEXT_PREVIEW_LIMIT) throw new Error(`文件大小 ${(size / 1024 / 1024).toFixed(1)} MB，超过预览上限 1 MB，请下载后查看`)
+    const result = await withRetry(() => client.get(request.key))
+    const buffer = Buffer.from(result.content)
+    // 扩展名是文本但内容含 NUL 字节，基本可判定为二进制文件
+    if (buffer.includes(0)) throw new Error('该文件内容为二进制数据，不支持预览')
+    return { kind, content: new TextDecoder('utf-8').decode(buffer) }
+  }
+  if (size > IMAGE_PREVIEW_LIMIT) throw new Error('图片超过 20 MB，暂不支持预览，请下载后查看')
+  const result = await withRetry(() => client.get(request.key))
+  const ext = (request.key.split('/').pop() || '').split('.').pop()?.toLowerCase() || ''
+  return { kind, mimeType: IMAGE_MIME_TYPES[ext] || 'application/octet-stream', base64: Buffer.from(result.content).toString('base64') }
 }
 
 function registerIpc(): void {
@@ -708,6 +755,8 @@ function registerIpc(): void {
       publicUrl: objectPublicUrl(request.bucket, request.region || profile.region, profile.endpoint, request.key)
     }
   })
+
+  ipcMain.handle('oss:preview-object', (_event, request: PreviewObjectRequest) => previewObject(request))
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {
     const config = await readConfig()

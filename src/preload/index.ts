@@ -41,6 +41,7 @@ const api: DesktopApi = {
   renameObject: (request) => ipcRenderer.invoke('oss:rename-object', request),
   transferObjects: (request) => ipcRenderer.invoke('oss:transfer-objects', request),
   getObjectUrl: (request) => ipcRenderer.invoke('oss:get-object-url', request),
+  previewObject: (request) => ipcRenderer.invoke('oss:preview-object', request),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   onUploadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)

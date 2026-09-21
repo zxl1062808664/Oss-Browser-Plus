@@ -365,6 +365,14 @@ h1, h2, p { margin: 0; }
 .url-field-head select { flex: none; height: 28px; padding: 0 8px; border: 1px solid #cdd5df; border-radius: 5px; color: #4f5b69; background: #fff; font-size: 11px; }
 .url-field-head select:disabled { color: #8a95a2; background: #f2f4f6; }
 .op-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; padding-top: 18px; margin-top: 16px; border-top: 1px solid #e6eaee; }
+
+/* 双击文件预览弹窗 */
+.preview-key { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.preview-state { min-height: 220px; display: grid; place-items: center; align-content: center; gap: 12px; color: #7b8794; font-size: 12px; }
+.preview-error { max-width: 100%; padding: 10px 14px; color: #a23d3d; background: #fff1f1; border: 1px solid #f0d3d3; border-radius: 5px; font-size: 12px; line-height: 1.6; }
+.preview-text { max-height: 58vh; overflow: auto; min-height: 120px; margin: 12px 0 0; padding: 12px 14px; color: #415064; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font: 12px/1.65 Consolas, monospace; white-space: pre-wrap; word-break: break-all; scrollbar-gutter: stable; }
+.preview-image { min-height: 120px; max-height: 58vh; display: grid; place-items: center; margin-top: 12px; padding: 12px; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; }
+.preview-image img { max-width: 100%; max-height: calc(58vh - 24px); object-fit: contain; border-radius: 3px; }
 .picker-path { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
 .picker-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 9px; }
 .picker-create input { min-width: 0; height: 32px; padding: 0 9px; border: 1px solid #cdd5df; border-radius: 5px; color: #293746; background: #fff; font-size: 11px; }
@@ -476,7 +484,11 @@ h1, h2, p { margin: 0; }
 [data-theme="dark"] .confirm-paths,
 [data-theme="dark"] .op-target-list,
 [data-theme="dark"] .url-box,
+[data-theme="dark"] .preview-text,
+[data-theme="dark"] .preview-image,
 [data-theme="dark"] .account-reference { color: #c5d0dc; background: #202e3b; border-color: #3b4d5e; }
+[data-theme="dark"] .preview-state { color: #8999aa; }
+[data-theme="dark"] .preview-error { color: #f39a9a; background: #3a2226; border-color: #5a3030; }
 [data-theme="dark"] .path-preview > span,
 [data-theme="dark"] .browse-path > span,
 [data-theme="dark"] .browse-scope-value,
