@@ -17,7 +17,7 @@ declare module 'ali-oss' {
     listBuckets(options?: Record<string, unknown>): Promise<{ buckets?: Array<{ name: string; region?: string; creationDate?: string | Date }> }>
     head(objectName: string): Promise<{ res?: { headers?: Record<string, unknown> } }>
     get(name: string, options?: Record<string, unknown>): Promise<{ content: Buffer; res?: unknown }>
-    put(objectName: string, content: Buffer | Uint8Array | string, options?: Record<string, unknown>): Promise<unknown>
+    put(objectName: string, content: Buffer | Uint8Array | string, options?: Record<string, unknown>): Promise<{ res?: { headers?: Record<string, unknown> } }>
     multipartUpload(objectName: string, filePath: string, options?: MultipartOptions): Promise<unknown>
     cancel(): void
     list(query: Record<string, unknown>): Promise<{ objects?: Array<{ name: string; size?: number; lastModified?: string | Date }>; prefixes?: string[]; isTruncated?: boolean; nextMarker?: string }>

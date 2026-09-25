@@ -86,3 +86,71 @@ export function classifyObjectPreview(name: string): ObjectPreviewKind | null {
   if (IMAGE_PREVIEW_EXTENSIONS.has(ext)) return 'image'
   return null
 }
+
+/** 可在应用内直接编辑保存的字节上限：超过则只读预览，提示下载后编辑 */
+export const TEXT_EDIT_LIMIT = 500 * 1024
+
+/**
+ * 是否允许在应用内编辑该对象：仅文本分类，且不超过编辑上限。
+ * size 未知（未取到 Content-Length）时按不可编辑处理，避免误开大文件。
+ */
+export function isTextEditable(name: string, size?: number): boolean {
+  if (classifyObjectPreview(name) !== 'text') return false
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return false
+  return size <= TEXT_EDIT_LIMIT
+}
+
+/** 超过编辑上限的提示文案，渲染层与主进程共用 */
+export function textEditLimitMessage(size: number): string {
+  return `文件大小 ${formatKilobytes(size)}，超过在线编辑上限 500 KB，请下载后编辑`
+}
+
+function formatKilobytes(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`
+  return `${size} B`
+}
+
+/**
+ * 校验待保存的文本内容：拒绝超限与二进制内容。
+ * 保存前必须再校验一次，不能只依赖渲染层的按钮状态。
+ */
+export function assertSavableTextContent(content: string): void {
+  if (content.includes('\u0000')) throw new Error('内容包含二进制字符，无法保存为文本')
+  const bytes = utf8ByteLength(content)
+  if (bytes > TEXT_EDIT_LIMIT) {
+    throw new Error(`内容大小 ${formatKilobytes(bytes)}，超过在线编辑上限 500 KB，请下载后编辑`)
+  }
+}
+
+/**
+ * 计算 UTF-8 字节数。
+ * 该模块同时被打进渲染进程，不能依赖 Node Buffer，因此按码点自行换算。
+ */
+export function utf8ByteLength(content: string): number {
+  let bytes = 0
+  for (const char of content) {
+    const code = char.codePointAt(0) as number
+    if (code <= 0x7f) bytes += 1
+    else if (code <= 0x7ff) bytes += 2
+    else if (code <= 0xffff) bytes += 3
+    else bytes += 4
+  }
+  return bytes
+}
+
+export type LineEnding = '\r\n' | '\n'
+
+/**
+ * 探测文本行尾风格：出现 CRLF 即视为 CRLF 文件。
+ * 保存时按原风格回写，避免一次保存把整个文件的行尾全改掉产生大 diff。
+ */
+export function detectLineEnding(content: string): LineEnding {
+  return content.includes('\r\n') ? '\r\n' : '\n'
+}
+
+/** 把任意行尾统一为目标风格（先把 CRLF 归一为 LF，再整体替换） */
+export function normalizeLineEnding(content: string, eol: LineEnding): string {
+  const unified = content.replace(/\r\n/g, '\n')
+  return eol === '\n' ? unified : unified.replace(/\n/g, '\r\n')
+}

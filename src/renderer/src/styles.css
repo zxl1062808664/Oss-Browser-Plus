@@ -371,6 +371,12 @@ h1, h2, p { margin: 0; }
 .preview-state { min-height: 220px; display: grid; place-items: center; align-content: center; gap: 12px; color: #7b8794; font-size: 12px; }
 .preview-error { max-width: 100%; padding: 10px 14px; color: #a23d3d; background: #fff1f1; border: 1px solid #f0d3d3; border-radius: 5px; font-size: 12px; line-height: 1.6; }
 .preview-text { max-height: 58vh; overflow: auto; min-height: 120px; margin: 12px 0 0; padding: 12px 14px; color: #415064; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font: 12px/1.65 Consolas, monospace; white-space: pre-wrap; word-break: break-all; scrollbar-gutter: stable; }
+/* 可编辑文本：与只读 pre 保持同一视觉规格，仅增加聚焦态与禁用态 */
+.preview-editor { display: block; width: 100%; box-sizing: border-box; max-height: 58vh; height: 58vh; overflow: auto; min-height: 120px; margin: 12px 0 0; padding: 12px 14px; color: #415064; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; font: 12px/1.65 Consolas, monospace; resize: vertical; scrollbar-gutter: stable; }
+.preview-editor:focus { outline: none; border-color: #6f9ee8; background: #fff; box-shadow: 0 0 0 2px rgba(111, 158, 232, .18); }
+.preview-editor:disabled { color: #8999aa; cursor: progress; }
+.preview-readonly-tip { color: #8a6414; }
+.preview-save-error { margin-top: 10px; }
 .preview-image { min-height: 120px; max-height: 58vh; display: grid; place-items: center; margin-top: 12px; padding: 12px; background: #f8fafb; border: 1px solid var(--border); border-radius: 5px; }
 .preview-image img { max-width: 100%; max-height: calc(58vh - 24px); object-fit: contain; border-radius: 3px; }
 .picker-path { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
@@ -485,8 +491,11 @@ h1, h2, p { margin: 0; }
 [data-theme="dark"] .op-target-list,
 [data-theme="dark"] .url-box,
 [data-theme="dark"] .preview-text,
+[data-theme="dark"] .preview-editor,
 [data-theme="dark"] .preview-image,
 [data-theme="dark"] .account-reference { color: #c5d0dc; background: #202e3b; border-color: #3b4d5e; }
+[data-theme="dark"] .preview-editor:focus { background: #26374a; border-color: #5a86c4; box-shadow: 0 0 0 2px rgba(90, 134, 196, .22); }
+[data-theme="dark"] .preview-readonly-tip { color: #d9b45f; }
 [data-theme="dark"] .preview-state { color: #8999aa; }
 [data-theme="dark"] .preview-error { color: #f39a9a; background: #3a2226; border-color: #5a3030; }
 [data-theme="dark"] .path-preview > span,

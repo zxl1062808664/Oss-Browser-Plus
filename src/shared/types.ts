@@ -151,10 +151,33 @@ export interface PreviewObjectRequest extends OssMutationRequest {
   key: string
 }
 
+/**
+ * 保存文本对象内容的请求。
+ * etag 为打开预览时拿到的对象 ETag，用于 If-Match 条件写入，避免覆盖他人的并发修改。
+ */
+export interface SaveObjectRequest extends OssMutationRequest {
+  key: string
+  content: string
+  etag?: string
+}
+
 /** 文件预览结果：文本按 UTF-8 解码后返回，图片返回 base64（渲染层拼 data URL） */
 export type ObjectPreview =
-  | { kind: 'text'; content: string }
+  | {
+    kind: 'text'
+    content: string
+    /** 读取时的对象 ETag，保存时回传做并发校验 */
+    etag?: string
+    /** 对象原始字节数，渲染层据此决定是否允许编辑 */
+    size: number
+  }
   | { kind: 'image'; mimeType: string; base64: string }
+
+/** 保存结果：返回新的 ETag 与写入字节数，便于渲染层更新基线继续编辑 */
+export interface SaveObjectResult {
+  etag?: string
+  size: number
+}
 
 export interface UploadProgressEvent {
   taskId: string
@@ -211,6 +234,7 @@ export interface DesktopApi {
   transferObjects: (request: TransferObjectsRequest) => Promise<{ count: number; failed: number; skipped: number; failedKeys: string[] }>
   getObjectUrl: (request: GetObjectUrlRequest) => Promise<{ signed: string; publicUrl: string }>
   previewObject: (request: PreviewObjectRequest) => Promise<ObjectPreview>
+  saveObject: (request: SaveObjectRequest) => Promise<SaveObjectResult>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
   onOpProgress: (callback: (event: OpProgressEvent) => void) => () => void

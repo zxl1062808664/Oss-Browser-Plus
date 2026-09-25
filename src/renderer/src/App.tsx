@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import {
-  ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FileUp, FileText, FolderInput, FolderOpen, FolderPlus, FolderSearch, Gauge, HardDriveUpload,
+  ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FilePen, FileUp, FileText, FolderInput, FolderOpen, FolderPlus, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Moon, Pencil, Plus, RefreshCw, Search, ScrollText, Settings, Sun, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
-import { classifyObjectPreview } from '../../shared/oss-operations'
+import { assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage } from '../../shared/oss-operations'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
@@ -950,7 +950,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       </div>{!atBucketList && <div className="browse-actions"><button className="secondary compact" disabled={operationBusy} onClick={() => setCreatingFolder(true)}><FolderPlus size={15} />新建文件夹</button><label className="select-all"><input type="checkbox" checked={visibleObjects.length > 0 && visibleObjects.every((item) => selectedKeys.includes(item.key))} disabled={operationBusy} onChange={(event) => selectAll(event.target.checked)} />全选</label><button className="secondary compact" disabled={!selectedItem || operationBusy} onClick={() => selectedItem && openRename(selectedItem)}><Pencil size={15} />重命名</button><button className="secondary compact" disabled={!selectedKeys.length || operationBusy} onClick={() => requestTransfer('copy')}><Copy size={15} />复制到…</button><button className="secondary compact" disabled={!selectedKeys.length || operationBusy} onClick={() => requestTransfer('move')}><FolderInput size={15} />移动到…</button><button className="secondary compact danger-op" disabled={!selectedKeys.length || operationBusy} onClick={() => requestDelete(objects.filter((item) => selectedKeys.includes(item.key)))}><Trash2 size={15} />删除选中</button><button className="primary compact" disabled={!selectedKeys.length || operationBusy} onClick={downloadSelected}>{downloading ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}下载选中项</button></div>}</section>
       {opActive && <OpProgressBar label={opLabel} progress={opProgress} onCancel={opCancellable ? cancelCurrentOperation : undefined} cancelling={cancellingOp} />}
       {notice && <div className="browse-notice">{notice}</div>}
-      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !visibleObjects.length ? <div className="object-empty"><FolderOpen size={25} /><span>{objectQuery.trim() ? '没有匹配的文件或文件夹' : '当前目录为空'}</span></div> : visibleObjects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder ? setCurrentPrefix(object.key.replace(/\/+$/, '')) : openPreview(object)}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={operationBusy} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}<button className="icon-button small" title="重命名" disabled={operationBusy} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={operationBusy} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} disabled={operationBusy} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
+      <section className="object-table"><div className="object-head"><span>{atBucketList ? 'Bucket' : '名称'}</span><span>{atBucketList ? 'Region' : '大小'}</span><span>{atBucketList ? '创建时间' : '修改时间'}</span><span>操作</span></div>{loading ? <div className="object-empty"><LoaderCircle className="spin" size={25} /><span>正在读取 OSS 数据...</span></div> : atBucketList ? (!buckets.length ? <div className="object-empty"><Cloud size={25} /><span>该账号下没有可访问的 Bucket</span></div> : buckets.map((bucket) => <div className="object-row" key={bucket.name} onDoubleClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}><div className="object-name"><Cloud size={19} /><span>{bucket.name}</span></div><span>{bucket.region || '—'}</span><span>{bucket.creationDate ? new Date(bucket.creationDate).toLocaleString('zh-CN') : '—'}</span><span><button className="text-button" onClick={() => { setSelectedBucket(bucket.name); setCurrentPrefix('') }}>打开</button></span></div>)) : !visibleObjects.length ? <div className="object-empty"><FolderOpen size={25} /><span>{objectQuery.trim() ? '没有匹配的文件或文件夹' : '当前目录为空'}</span></div> : visibleObjects.map((object) => <div className="object-row" key={object.key} onDoubleClick={() => object.isFolder ? setCurrentPrefix(object.key.replace(/\/+$/, '')) : openPreview(object)}><div className="object-name">{object.isFolder ? <FolderOpen size={19} /> : <FileText size={19} />}<span>{object.name}</span></div><span>{object.isFolder ? '文件夹' : formatBytes(object.size)}</span><span>{object.lastModified ? new Date(object.lastModified).toLocaleString('zh-CN') : '—'}</span><span className="object-actions">{object.isFolder ? <button className="icon-button small" title="打开文件夹" onClick={() => setCurrentPrefix(object.key.replace(/\/+$/, ''))}><FolderOpen size={15} /></button> : <button className="icon-button small" title="获取地址" disabled={operationBusy} onClick={() => fetchUrl(object)}><Link2 size={15} /></button>}{!object.isFolder && classifyObjectPreview(object.name) === 'text' && <button className="icon-button small" title="编辑文本内容" disabled={operationBusy} onClick={() => openPreview(object)}><FilePen size={15} /></button>}<button className="icon-button small" title="重命名" disabled={operationBusy} onClick={() => openRename(object)}><Pencil size={15} /></button><button className="icon-button small danger" title="删除" disabled={operationBusy} onClick={() => requestDelete([object])}><Trash2 size={15} /></button><input aria-label={`选择 ${object.name}`} type="checkbox" checked={selectedKeys.includes(object.key)} disabled={operationBusy} onChange={(event) => toggleItem(object.key, event.target.checked)} /></span></div>)}</section>
       {!atBucketList && nextMarker && <div className="load-more-row"><button className="secondary compact" disabled={loadingMore || operationBusy} onClick={loadMoreObjects}>{loadingMore ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}{loadingMore ? '加载中…' : '加载更多对象'}</button></div>}
       </>}
     {creatingFolder && <Modal title="新建文件夹" onClose={() => !busyOp && setCreatingFolder(false)}>
@@ -1005,7 +1005,14 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         <div className="op-actions"><button type="button" className="text-button" onClick={() => setUrlItem(null)}>关闭</button></div>
       </div>
     </Modal>}
-    {previewItem && <PreviewModal item={previewItem} state={previewState} onNotice={setNotice} onClose={() => setPreviewItem(null)} />}
+    {previewItem && profile && bucketName && <PreviewModal
+      item={previewItem}
+      state={previewState}
+      context={{ profileId: profile.id, bucket: bucketName, region: bucketRegion }}
+      onNotice={setNotice}
+      onSaved={() => setRefreshKey((value) => value + 1)}
+      onClose={() => setPreviewItem(null)}
+    />}
     {uploadOpen && <Modal title="上传进度" wide onClose={() => setUploadOpen(false)}>
       <div className="op-form">
         {!uploadQueue.length ? <div className="picker-empty">暂无上传任务</div> : <>
@@ -1417,25 +1424,96 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><div className={`modal${wide ? ' wide' : ''}`}><div className="modal-header"><h2>{title}</h2><button className="icon-button" title="关闭" onClick={onClose}><X size={19} /></button></div>{children}</div></div>
 }
 
-/** OSS 文件预览弹窗：文本用等宽 pre 展示，图片直接显示，加载与失败原因都在弹窗内呈现 */
-function PreviewModal({ item, state, onNotice, onClose }: { item: OssObjectItem; state: ObjectPreviewState; onNotice: (message: string) => void; onClose: () => void }) {
-  const text = state.status === 'ready' && state.data.kind === 'text' ? state.data.content : null
+/**
+ * OSS 文件预览弹窗。
+ * 文本：可编辑（受 500 KB 上限约束），支持保存 / 还原，保存成功后回调刷新列表。
+ * 图片与超限文本：只读展示。
+ */
+function PreviewModal({ item, state, context, onNotice, onSaved, onClose }: {
+  item: OssObjectItem
+  state: ObjectPreviewState
+  /** 保存时需要的 OSS 定位信息，由父组件组装 */
+  context: { profileId: string; bucket: string; region?: string }
+  onNotice: (message: string) => void
+  onSaved: () => void
+  onClose: () => void
+}) {
+  const textData = state.status === 'ready' && state.data.kind === 'text' ? state.data : null
   const image = state.status === 'ready' && state.data.kind === 'image' ? state.data : null
+  const text = textData ? textData.content : null
+
+  // 编辑草稿：baseline 为当前已保存内容，二者不同即视为有未保存改动
+  const [draft, setDraft] = useState('')
+  const [baseline, setBaseline] = useState('')
+  const [etag, setEtag] = useState<string | undefined>(undefined)
+  const [size, setSize] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  // 内容加载完成后初始化草稿与并发校验基线
+  useEffect(() => {
+    if (!textData) return
+    setDraft(textData.content)
+    setBaseline(textData.content)
+    setEtag(textData.etag)
+    setSize(textData.size)
+    setSaveError('')
+  }, [textData])
+
+  const editable = textData !== null && isTextEditable(item.name, size)
+  const dirty = editable && draft !== baseline
+
+  /** 保存：按原文件行尾风格回写，避免整文件行尾被改写产生大 diff */
+  const save = async () => {
+    if (!editable || saving) return
+    setSaving(true)
+    setSaveError('')
+    try {
+      const payload = normalizeLineEnding(draft, detectLineEnding(baseline))
+      assertSavableTextContent(payload)
+      const result = await window.desktopApi.saveObject({ ...context, key: item.key, content: payload, etag })
+      setBaseline(payload)
+      setDraft(payload)
+      setEtag(result.etag)
+      setSize(result.size)
+      onNotice(`「${item.name}」已保存（${formatBytes(result.size)}）`)
+      onSaved()
+    } catch (error) {
+      // 失败时保留草稿，只把原因显示在弹窗内
+      setSaveError(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** 有未保存改动时先确认，避免误关丢失编辑 */
+  const requestClose = () => {
+    if (dirty && !window.confirm('有未保存的修改，确定关闭并不保存吗？')) return
+    onClose()
+  }
+
   const copyContent = async () => {
     if (text === null) return
-    await window.desktopApi.copyText(text)
+    await window.desktopApi.copyText(draft || text)
     onNotice('文件内容已复制到剪贴板')
   }
-  return <Modal title="文件预览" wide onClose={onClose}>
+
+  return <Modal title={editable ? '编辑文件' : '文件预览'} wide onClose={requestClose}>
     <div className="op-form">
       <p className="op-tip">对象：<code className="preview-key" title={item.key}>{item.key}</code></p>
       {state.status === 'loading' && <div className="preview-state"><LoaderCircle className="spin" size={22} /><span>正在读取对象内容…</span></div>}
       {state.status === 'error' && <div className="preview-state"><span className="preview-error">{state.message}</span></div>}
-      {text !== null && <pre className="preview-text">{text || '（空文件）'}</pre>}
+      {text !== null && !editable && <p className="op-tip preview-readonly-tip">{textEditLimitMessage(size)}</p>}
+      {editable
+        ? <textarea className="preview-editor" value={draft} spellCheck={false} disabled={saving} onChange={(event) => setDraft(event.target.value)} />
+        : text !== null && <pre className="preview-text">{text || '（空文件）'}</pre>}
       {image && <div className="preview-image"><img src={`data:${image.mimeType};base64,${image.base64}`} alt={item.name} /></div>}
+      {saveError && <p className="preview-error preview-save-error">{saveError}</p>}
       <div className="op-actions">
         {text !== null && <button type="button" className="secondary compact" disabled={!text} onClick={copyContent}><Clipboard size={14} />复制内容</button>}
-        <button type="button" className="text-button" onClick={onClose}>关闭</button>
+        {editable && <button type="button" className="secondary compact" disabled={!dirty || saving} onClick={() => { setDraft(baseline); setSaveError('') }}><RefreshCw size={14} />还原</button>}
+        {editable && <button type="button" className="primary compact" disabled={!dirty || saving} onClick={save}>{saving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{saving ? '正在保存…' : '保存'}</button>}
+        <button type="button" className="text-button" onClick={requestClose}>关闭</button>
       </div>
     </div>
   </Modal>

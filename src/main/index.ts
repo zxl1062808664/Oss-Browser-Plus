@@ -5,8 +5,8 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
-import { buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, normalizeObjectPrefix } from '../shared/oss-operations'
+import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, SaveObjectRequest, SaveObjectResult, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
+import { assertSavableTextContent, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, normalizeObjectPrefix } from '../shared/oss-operations'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -330,9 +330,11 @@ async function previewObject(request: PreviewObjectRequest): Promise<ObjectPrevi
   if (!kind) throw new Error('该文件类型暂不支持预览')
   const client = createClient(profile, request.bucket, undefined, request.region)
   let size = 0
+  let etag = ''
   try {
     const head = await withRetry(() => client.head(request.key))
     size = Number(head.res?.headers?.['content-length'] || 0)
+    etag = String(head.res?.headers?.etag || '').replace(/"/g, '')
   } catch (error) {
     if ((error as { status?: number }).status === 404) throw new Error('对象不存在或已被删除')
     throw error
@@ -343,12 +345,70 @@ async function previewObject(request: PreviewObjectRequest): Promise<ObjectPrevi
     const buffer = Buffer.from(result.content)
     // 扩展名是文本但内容含 NUL 字节，基本可判定为二进制文件
     if (buffer.includes(0)) throw new Error('该文件内容为二进制数据，不支持预览')
-    return { kind, content: new TextDecoder('utf-8').decode(buffer) }
+    return { kind, content: new TextDecoder('utf-8').decode(buffer), etag: etag || undefined, size }
   }
   if (size > IMAGE_PREVIEW_LIMIT) throw new Error('图片超过 20 MB，暂不支持预览，请下载后查看')
   const result = await withRetry(() => client.get(request.key))
   const ext = (request.key.split('/').pop() || '').split('.').pop()?.toLowerCase() || ''
   return { kind, mimeType: IMAGE_MIME_TYPES[ext] || 'application/octet-stream', base64: Buffer.from(result.content).toString('base64') }
+}
+
+/** 文本对象写入时的 Content-Type：按扩展名推断，未知统一按纯文本处理 */
+const TEXT_CONTENT_TYPES: Record<string, string> = {
+  txt: 'text/plain; charset=utf-8',
+  log: 'text/plain; charset=utf-8',
+  md: 'text/markdown; charset=utf-8',
+  markdown: 'text/markdown; charset=utf-8',
+  json: 'application/json; charset=utf-8',
+  jsonl: 'application/json; charset=utf-8',
+  ndjson: 'application/json; charset=utf-8',
+  xml: 'application/xml; charset=utf-8',
+  yaml: 'text/yaml; charset=utf-8',
+  yml: 'text/yaml; charset=utf-8',
+  csv: 'text/csv; charset=utf-8',
+  tsv: 'text/tab-separated-values; charset=utf-8',
+  html: 'text/html; charset=utf-8',
+  htm: 'text/html; charset=utf-8',
+  css: 'text/css; charset=utf-8',
+  js: 'text/javascript; charset=utf-8',
+  mjs: 'text/javascript; charset=utf-8',
+  cjs: 'text/javascript; charset=utf-8',
+  svg: 'image/svg+xml; charset=utf-8'
+}
+
+function textContentType(key: string): string {
+  const ext = (key.split('/').pop() || '').split('.').pop()?.toLowerCase() || ''
+  return TEXT_CONTENT_TYPES[ext] || 'text/plain; charset=utf-8'
+}
+
+/**
+ * 保存文本对象内容（覆盖写）。
+ * 仅允许文本分类，写入前二次校验大小与二进制内容；
+ * etag 存在时用 If-Match 做乐观并发控制，避免覆盖他人已提交的修改。
+ */
+async function saveObject(request: SaveObjectRequest): Promise<SaveObjectResult> {
+  const config = await readConfig()
+  const profile = config.profiles.find((item) => item.id === request.profileId)
+  if (!profile) throw new Error('OSS 配置不存在')
+  if (request.key.endsWith('/')) throw new Error('文件夹不支持编辑')
+  if (classifyObjectPreview(request.key) !== 'text') throw new Error('该文件类型不支持在线编辑，仅支持文本文件')
+  assertSavableTextContent(request.content)
+
+  const buffer = Buffer.from(request.content, 'utf8')
+  const client = createClient(profile, request.bucket, undefined, request.region)
+  const headers: Record<string, string> = { 'Content-Type': textContentType(request.key) }
+  if (request.etag) headers['If-Match'] = request.etag
+
+  try {
+    const result = await withRetry(() => client.put(request.key, buffer, { headers }))
+    const responseEtag = String((result as { res?: { headers?: Record<string, unknown> } })?.res?.headers?.etag || '').replace(/"/g, '')
+    return { etag: responseEtag || undefined, size: buffer.byteLength }
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (status === 412) throw new Error('文件已被其他人修改，请关闭后重新打开再编辑，避免覆盖对方的改动')
+    if (status === 404) throw new Error('对象不存在或已被删除，无法保存')
+    throw error
+  }
 }
 
 function registerIpc(): void {
@@ -757,6 +817,8 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('oss:preview-object', (_event, request: PreviewObjectRequest) => previewObject(request))
+
+  ipcMain.handle('oss:save-object', (_event, request: SaveObjectRequest) => saveObject(request))
 
   ipcMain.handle('oss:upload', async (event, request: UploadRequest) => {
     const config = await readConfig()

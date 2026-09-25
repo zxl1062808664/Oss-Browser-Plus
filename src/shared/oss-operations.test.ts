@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assertSavableTextContent,
   buildFolderKey,
   buildRenameDestination,
   buildRenameObjectTarget,
   buildTransferPairs,
+  classifyObjectPreview,
+  detectLineEnding,
+  isTextEditable,
+  normalizeLineEnding,
   normalizeObjectPrefix,
+  utf8ByteLength,
   validateObjectEntryName
 } from './oss-operations'
 
@@ -87,5 +93,83 @@ describe('transfer path calculation', () => {
 
   it('rejects objects outside the selected folder', () => {
     expect(() => buildTransferPairs('apps/release/', ['apps/other/a.txt'], 'archive')).toThrow()
+  })
+})
+
+
+describe('classifyObjectPreview', () => {
+  it('classifies text and image extensions', () => {
+    expect(classifyObjectPreview('readme.md')).toBe('text')
+    expect(classifyObjectPreview('logs/app.LOG')).toBe('text')
+    expect(classifyObjectPreview('config/db.json')).toBe('text')
+    expect(classifyObjectPreview('pic/icon.png')).toBe('image')
+    expect(classifyObjectPreview('archive.zip')).toBeNull()
+  })
+})
+
+describe('isTextEditable', () => {
+  it('allows text files within the 500 KB limit', () => {
+    expect(isTextEditable('notes.txt', 0)).toBe(true)
+    expect(isTextEditable('a/b/c.json', 500 * 1024)).toBe(true)
+    expect(isTextEditable('deep/log.log', 1024)).toBe(true)
+  })
+
+  it('rejects text over the limit', () => {
+    expect(isTextEditable('big.txt', 500 * 1024 + 1)).toBe(false)
+  })
+
+  it('rejects images and unsupported types regardless of size', () => {
+    expect(isTextEditable('photo.png', 1024)).toBe(false)
+    expect(isTextEditable('archive.zip', 1024)).toBe(false)
+  })
+
+  it('rejects when size is unknown', () => {
+    expect(isTextEditable('notes.txt')).toBe(false)
+    expect(isTextEditable('notes.txt', Number.NaN)).toBe(false)
+  })
+})
+
+describe('utf8ByteLength', () => {
+  it('counts ascii and multibyte characters by UTF-8 bytes', () => {
+    expect(utf8ByteLength('abc')).toBe(3)
+    expect(utf8ByteLength('中')).toBe(3)
+    expect(utf8ByteLength('中文abc')).toBe(9)
+  })
+
+  it('counts astral characters as 4 bytes', () => {
+    expect(utf8ByteLength('\u{1F600}')).toBe(4)
+  })
+})
+
+describe('assertSavableTextContent', () => {
+  it('accepts content within the limit', () => {
+    expect(() => assertSavableTextContent('hello')).not.toThrow()
+    expect(() => assertSavableTextContent('中'.repeat(1000))).not.toThrow()
+  })
+
+  it('rejects content over 500 KB even when the character count is small', () => {
+    expect(() => assertSavableTextContent('中'.repeat(200 * 1024))).toThrow(/500 KB/)
+  })
+
+  it('rejects binary content containing NUL', () => {
+    expect(() => assertSavableTextContent('a\u0000b')).toThrow(/二进制/)
+  })
+})
+
+describe('line ending handling', () => {
+  it('detects CRLF only when present', () => {
+    expect(detectLineEnding('a\r\nb')).toBe('\r\n')
+    expect(detectLineEnding('a\nb')).toBe('\n')
+    expect(detectLineEnding('plain')).toBe('\n')
+  })
+
+  it('normalizes mixed endings to the target style', () => {
+    expect(normalizeLineEnding('a\r\nb\nc', '\r\n')).toBe('a\r\nb\r\nc')
+    expect(normalizeLineEnding('a\r\nb\r\n', '\n')).toBe('a\nb\n')
+  })
+
+  it('is idempotent and keeps a CRLF file from being rewritten with LF', () => {
+    const crlf = 'line1\r\nline2\r\n'
+    expect(normalizeLineEnding(crlf, detectLineEnding(crlf))).toBe(crlf)
   })
 })
