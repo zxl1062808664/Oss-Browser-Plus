@@ -1192,6 +1192,10 @@ function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppC
   const [pathProfileId, setPathProfileId] = useState(config.profiles[0]?.id || '')
   const [categoryName, setCategoryName] = useState('')
   const [deletingCategory, setDeletingCategory] = useState<PathCategory | null>(null)
+  /** 待确认删除的常用路径：删除不可恢复，必须先经弹窗确认 */
+  const [deletingPreset, setDeletingPreset] = useState<UploadPreset | null>(null)
+  /** 待确认删除的 OSS 账号：会级联删除该账号下的全部常用路径 */
+  const [deletingProfile, setDeletingProfile] = useState<OssProfile | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<string[]>(loadExpandedGroups)
   const effectivePathProfileId = config.profiles.some((profile) => profile.id === pathProfileId) ? pathProfileId : (config.profiles[0]?.id || '')
   useEffect(() => {
@@ -1255,7 +1259,7 @@ function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppC
         <span className="config-icon"><Cloud size={20} /></span><div className="config-main"><div><strong>{profile.name}</strong>{profile.isDefault && <em>默认</em>}</div><span>{profile.endpoint}</span></div>
         <span className={profile.hasSecret ? 'credential good' : 'credential'}>{profile.hasSecret ? '凭据已保存' : '缺少 Secret'}</span>
         <button className="icon-button small" title="编辑" onClick={() => { setProfileForm({ ...profile, accessKeySecret: '' }); setMessage('') }}><Pencil size={16} /></button>
-        <button className="icon-button small danger" title="删除" onClick={async () => onChange(await window.desktopApi.deleteProfile(profile.id))}><Trash2 size={16} /></button>
+        <button className="icon-button small danger" title="删除" onClick={() => setDeletingProfile(profile)}><Trash2 size={16} /></button>
       </div>)}</div>}
     </section>}
 
@@ -1282,7 +1286,7 @@ function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppC
               profileName={config.profiles.find((item) => item.id === preset.profileId)?.name}
               categoryName={group.key === UNCATEGORIZED_GROUP ? undefined : group.name}
               onEdit={() => setPresetForm(preset)}
-              onDelete={async () => onChange(await window.desktopApi.deletePreset(preset.id))}
+              onDelete={() => setDeletingPreset(preset)}
             />)}</div>}
           </div>
         })}</div> : <div className="config-list">{accountPresets.map((preset) => <PresetRow
@@ -1291,7 +1295,7 @@ function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppC
           profileName={config.profiles.find((item) => item.id === preset.profileId)?.name}
           categoryName={categoryNameOf(preset.categoryId)}
           onEdit={() => setPresetForm(preset)}
-          onDelete={async () => onChange(await window.desktopApi.deletePreset(preset.id))}
+          onDelete={() => setDeletingPreset(preset)}
         />)}</div>}
       </>}
     </section>}
@@ -1319,6 +1323,29 @@ function SettingsPage({ config, onChange, theme, onThemeChange }: { config: AppC
       <div className="op-form">
         <p className="op-warn">确定删除分类“{deletingCategory.name}”？其下 {config.presets.filter((preset) => preset.categoryId === deletingCategory.id).length} 个常用路径将变为“未分类”，路径本身不受影响。</p>
         <div className="op-actions"><button type="button" className="text-button" onClick={() => setDeletingCategory(null)}>取消</button><button type="button" className="primary danger" onClick={async () => { onChange(await window.desktopApi.deleteCategory(deletingCategory.id)); setDeletingCategory(null) }}><Trash2 size={16} />确认删除</button></div>
+      </div>
+    </Modal>}
+
+    {deletingProfile && (() => {
+      const affected = config.presets.filter((preset) => preset.profileId === deletingProfile.id)
+      return <Modal title="删除 OSS 账号" onClose={() => setDeletingProfile(null)}>
+        <div className="op-form">
+          <p className="op-warn">确定删除账号“{deletingProfile.name}”？该操作不可恢复。</p>
+          <div className="op-target-list"><code>{deletingProfile.name}</code><code>{deletingProfile.endpoint}</code><code>AccessKeyId：{deletingProfile.accessKeyId}</code></div>
+          {affected.length > 0 && <p className="op-warn">该账号下的 {affected.length} 条常用路径会被一并删除：</p>}
+          {affected.length > 0 && <div className="op-target-list">{affected.map((preset) => <code key={preset.id}>{preset.name}（{fullPath(preset)}）</code>)}</div>}
+          <p className="op-tip">仅删除本地保存的账号配置，不会删除 OSS 上的任何文件。</p>
+          <div className="op-actions"><button type="button" className="text-button" onClick={() => setDeletingProfile(null)}>取消</button><button type="button" className="primary danger" onClick={async () => { onChange(await window.desktopApi.deleteProfile(deletingProfile.id)); setDeletingProfile(null) }}><Trash2 size={16} />确认删除</button></div>
+        </div>
+      </Modal>
+    })()}
+
+    {deletingPreset && <Modal title="删除常用路径" onClose={() => setDeletingPreset(null)}>
+      <div className="op-form">
+        <p className="op-warn">确定删除常用路径“{deletingPreset.name}”？该操作不可恢复。</p>
+        <div className="op-target-list"><code>{fullPath(deletingPreset)}</code></div>
+        <p className="op-tip">仅删除这条本地配置，不会删除 OSS 上的任何文件。</p>
+        <div className="op-actions"><button type="button" className="text-button" onClick={() => setDeletingPreset(null)}>取消</button><button type="button" className="primary danger" onClick={async () => { onChange(await window.desktopApi.deletePreset(deletingPreset.id)); setDeletingPreset(null) }}><Trash2 size={16} />确认删除</button></div>
       </div>
     </Modal>}
 
