@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DesktopApi, OpProgressEvent, UploadProgressEvent } from '../shared/types'
+import { appendOssTroubleshootingHint } from '../shared/oss-operations'
+
+function invokeOss<T>(channel: string, ...args: unknown[]): Promise<T> {
+  return ipcRenderer.invoke(channel, ...args).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(appendOssTroubleshootingHint(message))
+  })
+}
 
 const api: DesktopApi = {
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -10,7 +18,10 @@ const api: DesktopApi = {
   saveCategory: (category) => ipcRenderer.invoke('config:save-category', category),
   deleteCategory: (id) => ipcRenderer.invoke('config:delete-category', id),
   savePreferences: (input) => ipcRenderer.invoke('config:save-preferences', input),
-  testConnection: (profile) => ipcRenderer.invoke('oss:test', profile),
+  testConnection: async (profile) => {
+    const result = await invokeOss<Awaited<ReturnType<DesktopApi['testConnection']>>>('oss:test', profile)
+    return result.ok ? result : { ...result, message: appendOssTroubleshootingHint(result.message) }
+  },
   selectFiles: () => ipcRenderer.invoke('files:select'),
   // Electron 32+ 已移除 File.path，且在 contextIsolation 下渲染进程读不到本地路径。
   // webUtils.getPathForFile 只能在预加载（隔离上下文）里调用，因此在这里把 File 转成真实路径。
@@ -28,21 +39,21 @@ const api: DesktopApi = {
   collectFolderSelection: (root, selectedPaths) => ipcRenderer.invoke('folder:collect', root, selectedPaths),
   selectFolderForUpload: () => ipcRenderer.invoke('folder:select-upload'),
   collectFromPaths: (paths) => ipcRenderer.invoke('files:collect-from-paths', paths),
-  upload: (request) => ipcRenderer.invoke('oss:upload', request),
+  upload: (request) => invokeOss('oss:upload', request),
   cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
   setObjectOperationActive: (active) => ipcRenderer.invoke('oss:set-operation-active', active),
   cancelObjectOperation: () => ipcRenderer.invoke('oss:cancel-operation'),
-  listObjects: (request) => ipcRenderer.invoke('oss:list-objects', request),
-  listObjectsPage: (request) => ipcRenderer.invoke('oss:list-objects-page', request),
-  listBuckets: (profileId) => ipcRenderer.invoke('oss:list-buckets', profileId),
-  createFolder: (request) => ipcRenderer.invoke('oss:create-folder', request),
-  downloadObjects: (request) => ipcRenderer.invoke('oss:download-objects', request),
-  deleteObjects: (request) => ipcRenderer.invoke('oss:delete-objects', request),
-  renameObject: (request) => ipcRenderer.invoke('oss:rename-object', request),
-  transferObjects: (request) => ipcRenderer.invoke('oss:transfer-objects', request),
-  getObjectUrl: (request) => ipcRenderer.invoke('oss:get-object-url', request),
-  previewObject: (request) => ipcRenderer.invoke('oss:preview-object', request),
-  saveObject: (request) => ipcRenderer.invoke('oss:save-object', request),
+  listObjects: (request) => invokeOss('oss:list-objects', request),
+  listObjectsPage: (request) => invokeOss('oss:list-objects-page', request),
+  listBuckets: (profileId) => invokeOss('oss:list-buckets', profileId),
+  createFolder: (request) => invokeOss('oss:create-folder', request),
+  downloadObjects: (request) => invokeOss('oss:download-objects', request),
+  deleteObjects: (request) => invokeOss('oss:delete-objects', request),
+  renameObject: (request) => invokeOss('oss:rename-object', request),
+  transferObjects: (request) => invokeOss('oss:transfer-objects', request),
+  getObjectUrl: (request) => invokeOss('oss:get-object-url', request),
+  previewObject: (request) => invokeOss('oss:preview-object', request),
+  saveObject: (request) => invokeOss('oss:save-object', request),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
   onUploadProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)

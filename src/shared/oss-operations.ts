@@ -3,6 +3,13 @@ export interface ObjectTransferPair {
   target: string
 }
 
+export const OSS_TROUBLESHOOTING_HINT = '排查建议：请检查 OSS 账号是否欠费或网络连接是否正常'
+
+export function appendOssTroubleshootingHint(message: string): string {
+  if (message.includes(OSS_TROUBLESHOOTING_HINT)) return message
+  return `${message}；${OSS_TROUBLESHOOTING_HINT}`
+}
+
 export function normalizeObjectPrefix(prefix: string): string {
   return prefix.trim().replace(/^\/+|\/+$/g, '')
 }

@@ -4,7 +4,7 @@ import {
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Moon, Pencil, Plus, RefreshCw, Search, ScrollText, Settings, Sun, Trash2, Upload, X
 } from 'lucide-react'
 import type { AppConfig, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
-import { assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage } from '../../shared/oss-operations'
+import { appendOssTroubleshootingHint, assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage } from '../../shared/oss-operations'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
@@ -568,7 +568,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       if ('cancelled' in result) {
         setNotice('已取消选择下载目录')
       } else {
-        const message = `已下载 ${result.count} 个文件${result.skipped ? `，跳过 ${result.skipped} 个同名文件` : ''}${result.failed ? `，${result.failed} 个失败` : ''}${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`
+        const summary = `已下载 ${result.count} 个文件${result.skipped ? `，跳过 ${result.skipped} 个同名文件` : ''}${result.failed ? `，${result.failed} 个失败` : ''}${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`
+        const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
         setNotice(message)
         onLog(result.failed ? 'error' : 'success', message)
         logFailedKeys('下载', result.failedKeys)
@@ -679,9 +680,10 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       const result = await window.desktopApi.renameObject({
         profileId: profile.id, bucket: bucketName, region: bucketRegion, key: renaming.key, newName
       })
-      const message = result.failed
+      const summary = result.failed
         ? `重命名部分完成：${result.failed} 个对象处理失败`
         : `已重命名为：${result.key}`
+      const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
       setNotice(message)
       onLog(result.failed ? 'error' : 'success', message)
       logFailedKeys('重命名', result.failedKeys)
@@ -712,7 +714,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         profileId: profile.id, bucket: bucketName, region: bucketRegion,
         keys: confirmingDelete.map((item) => item.key)
       })
-      const message = `已删除 ${result.deleted} 个对象${result.failed ? `，${result.failed} 个失败` : ''}`
+      const summary = `已删除 ${result.deleted} 个对象${result.failed ? `，${result.failed} 个失败` : ''}`
+      const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
       setNotice(message)
       onLog(result.failed ? 'error' : 'success', message)
       logFailedKeys('删除', result.failedKeys)
@@ -743,7 +746,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
         profileId: profile.id, bucket: bucketName, region: bucketRegion,
         sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget, conflictStrategy
       })
-      const message = `${action}完成：${result.count} 个成功${result.skipped ? `，${result.skipped} 个同名对象已跳过` : ''}${result.failed ? `，${result.failed} 个失败` : ''}`
+      const summary = `${action}完成：${result.count} 个成功${result.skipped ? `，${result.skipped} 个同名对象已跳过` : ''}${result.failed ? `，${result.failed} 个失败` : ''}`
+      const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
       setNotice(message)
       onLog(result.failed ? 'error' : 'success', message)
       logFailedKeys(action, result.failedKeys)
@@ -864,7 +868,8 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
     await Promise.all(Array.from({ length: config.concurrentUploads }, worker))
     uploadPendingRef.current = []
     setUploading(false)
-    const message = `上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`
+    const summary = `上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`
+    const message = failedCount ? appendOssTroubleshootingHint(summary) : summary
     setNotice(message)
     onLog(failedCount ? 'error' : 'success', message)
     refreshObjects()
