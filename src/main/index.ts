@@ -5,7 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
-import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, SaveObjectRequest, SaveObjectResult, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
+import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderScanProgress, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, SaveObjectRequest, SaveObjectResult, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
 import { assertSavableTextContent, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, normalizeObjectPrefix } from '../shared/oss-operations'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
@@ -13,6 +13,7 @@ interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecre
 }
 
 interface StoredConfig {
+  version: number
   profiles: StoredProfile[]
   presets: UploadPreset[]
   categories: PathCategory[]
@@ -21,6 +22,7 @@ interface StoredConfig {
 }
 
 const defaultConfig: StoredConfig = {
+  version: 1,
   profiles: [],
   presets: [],
   categories: [],
@@ -31,10 +33,26 @@ const defaultConfig: StoredConfig = {
 const activeUploadClients = new Map<string, InstanceType<typeof OSS>>()
 const activeObjectOperationSenders = new Set<number>()
 const cancelledObjectOperationSenders = new Set<number>()
+interface FolderScanContext {
+  cancelled: boolean
+  scannedFiles: number
+  scannedFolders: number
+  scanWarnings: number
+  lastProgressAt: number
+  excludeNames: Set<string>
+  sendProgress: (progress: FolderScanProgress) => void
+}
+const activeFolderScans = new Map<number, FolderScanContext>()
 
 class OperationCancelledError extends Error {
   constructor() {
     super('操作已取消，已完成的对象不会回滚')
+  }
+}
+
+class FolderScanCancelledError extends Error {
+  constructor() {
+    super('目录扫描已取消')
   }
 }
 
@@ -67,19 +85,164 @@ async function withRetry<T>(operation: () => Promise<T>, attempts = 2): Promise<
 }
 
 const configPath = () => path.join(app.getPath('userData'), 'config.json')
+const configBackupPath = () => `${configPath()}.bak`
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`配置字段“${label}”格式无效`)
+  return value
+}
+
+function normalizeDefaults(config: StoredConfig): StoredConfig {
+  if (config.profiles.length) {
+    const defaultProfile = config.profiles.find((profile) => profile.isDefault) || config.profiles[0]
+    config.profiles.forEach((profile) => { profile.isDefault = profile.id === defaultProfile.id })
+  }
+  for (const profile of config.profiles) {
+    const presets = config.presets.filter((preset) => preset.profileId === profile.id)
+    if (!presets.length) continue
+    const defaultPreset = presets.find((preset) => preset.isDefault) || presets[0]
+    presets.forEach((preset) => { preset.isDefault = preset.id === defaultPreset.id })
+  }
+  return config
+}
+
+function normalizeConfig(value: unknown): StoredConfig {
+  if (!isRecord(value)) throw new Error('配置文件不是有效的对象')
+  const profileValue = value.profiles === undefined ? [] : value.profiles
+  const presetValue = value.presets === undefined ? [] : value.presets
+  const categoryValue = value.categories === undefined ? [] : value.categories
+  if (!Array.isArray(profileValue) || !Array.isArray(presetValue) || !Array.isArray(categoryValue)) throw new Error('配置文件缺少必要的数据列表')
+
+  const profiles: StoredProfile[] = profileValue.map((item, index) => {
+    if (!isRecord(item)) throw new Error(`第 ${index + 1} 个 OSS 账号配置格式无效`)
+    const encryptedSecret = item.encryptedSecret
+    if (encryptedSecret !== undefined && typeof encryptedSecret !== 'string') throw new Error(`第 ${index + 1} 个 OSS 账号凭据格式无效`)
+    return {
+      id: requiredString(item.id, `profiles[${index}].id`),
+      name: requiredString(item.name, `profiles[${index}].name`),
+      endpoint: requiredString(item.endpoint, `profiles[${index}].endpoint`),
+      region: requiredString(item.region, `profiles[${index}].region`),
+      accessKeyId: requiredString(item.accessKeyId, `profiles[${index}].accessKeyId`),
+      isDefault: Boolean(item.isDefault),
+      ...(encryptedSecret ? { encryptedSecret } : {})
+    }
+  })
+  const profileIds = new Set<string>()
+  profiles.forEach((profile) => {
+    if (!profile.id || profileIds.has(profile.id)) throw new Error('配置文件包含重复的 OSS 账号 ID')
+    profileIds.add(profile.id)
+  })
+
+  const presets: UploadPreset[] = presetValue.map((item, index) => {
+    if (!isRecord(item)) throw new Error(`第 ${index + 1} 个常用路径配置格式无效`)
+    const categoryId = item.categoryId
+    if (categoryId !== undefined && typeof categoryId !== 'string') throw new Error(`第 ${index + 1} 个常用路径分类格式无效`)
+    return {
+      id: requiredString(item.id, `presets[${index}].id`),
+      name: requiredString(item.name, `presets[${index}].name`),
+      description: item.description === undefined ? '' : requiredString(item.description, `presets[${index}].description`),
+      profileId: requiredString(item.profileId, `presets[${index}].profileId`),
+      bucket: requiredString(item.bucket, `presets[${index}].bucket`),
+      prefix: requiredString(item.prefix, `presets[${index}].prefix`),
+      isDefault: Boolean(item.isDefault),
+      ...(categoryId ? { categoryId } : {})
+    }
+  })
+  const presetIds = new Set<string>()
+  presets.forEach((preset) => {
+    if (!preset.id || presetIds.has(preset.id)) throw new Error('配置文件包含重复的常用路径 ID')
+    if (!profileIds.has(preset.profileId)) throw new Error(`常用路径“${preset.name}”引用了不存在的 OSS 账号`)
+    presetIds.add(preset.id)
+  })
+
+  const categories: PathCategory[] = categoryValue.map((item, index) => {
+    if (!isRecord(item)) throw new Error(`第 ${index + 1} 个路径分类配置格式无效`)
+    return { id: requiredString(item.id, `categories[${index}].id`), name: requiredString(item.name, `categories[${index}].name`) }
+  })
+  const categoryIds = new Set<string>()
+  categories.forEach((category) => {
+    if (!category.id || categoryIds.has(category.id)) throw new Error('配置文件包含重复的路径分类 ID')
+    categoryIds.add(category.id)
+  })
+  presets.forEach((preset) => {
+    if (preset.categoryId && !categoryIds.has(preset.categoryId)) preset.categoryId = undefined
+  })
+
+  const concurrentUploads = value.concurrentUploads === undefined ? defaultConfig.concurrentUploads : Number(value.concurrentUploads)
+  if (!Number.isInteger(concurrentUploads) || concurrentUploads < 1 || concurrentUploads > 8) throw new Error('上传并发数必须是 1 到 8 之间的整数')
+  const conflictStrategy = value.conflictStrategy === undefined ? defaultConfig.conflictStrategy : value.conflictStrategy
+  if (conflictStrategy !== 'overwrite' && conflictStrategy !== 'skip') throw new Error('同名文件处理策略无效')
+
+  return normalizeDefaults({ version: 1, profiles, presets, categories, concurrentUploads, conflictStrategy })
+}
+
+async function readConfigFile(file: string): Promise<StoredConfig> {
+  const raw = await fs.readFile(file, 'utf8')
+  return normalizeConfig(JSON.parse(raw) as unknown)
+}
+
+interface ConfigReadResult {
+  config: StoredConfig
+  warning?: string
+}
+
+async function readConfigWithStatus(): Promise<ConfigReadResult> {
+  try {
+    return { config: await readConfigFile(configPath()) }
+  } catch (primaryError) {
+    try {
+      return {
+        config: await readConfigFile(configBackupPath()),
+        warning: '主配置文件读取失败，已从备份恢复。保存任意配置后会生成新的主配置。'
+      }
+    } catch (backupError) {
+      const primaryCode = (primaryError as { code?: string }).code
+      const backupCode = (backupError as { code?: string }).code
+      if (primaryCode === 'ENOENT' && backupCode === 'ENOENT') return { config: structuredClone(defaultConfig) }
+      throw new Error('配置文件损坏且备份不可用，请检查用户数据目录中的 config.json.bak 文件')
+    }
+  }
+}
 
 async function readConfig(): Promise<StoredConfig> {
+  return (await readConfigWithStatus()).config
+}
+
+async function replaceFileAtomically(tempFile: string, targetFile: string, backupFile: string): Promise<void> {
   try {
-    const raw = await fs.readFile(configPath(), 'utf8')
-    return { ...defaultConfig, ...JSON.parse(raw) }
-  } catch {
-    return structuredClone(defaultConfig)
+    await fs.rename(tempFile, targetFile)
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(code || '')) throw error
+    await fs.rm(targetFile, { force: true })
+    try {
+      await fs.rename(tempFile, targetFile)
+    } catch (replaceError) {
+      try { await fs.copyFile(backupFile, targetFile) } catch { /* 保留原始错误 */ }
+      throw replaceError
+    }
   }
 }
 
 async function writeConfig(config: StoredConfig): Promise<void> {
-  await fs.mkdir(path.dirname(configPath()), { recursive: true })
-  await fs.writeFile(configPath(), JSON.stringify(config, null, 2), 'utf8')
+  const normalized = normalizeConfig(config)
+  const targetFile = configPath()
+  const backupFile = configBackupPath()
+  const tempFile = `${targetFile}.${randomUUID()}.tmp`
+  await fs.mkdir(path.dirname(targetFile), { recursive: true })
+  try {
+    try { await fs.copyFile(targetFile, backupFile) } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') throw error
+    }
+    await fs.writeFile(tempFile, JSON.stringify(normalized, null, 2), 'utf8')
+    await replaceFileAtomically(tempFile, targetFile, backupFile)
+  } finally {
+    await fs.rm(tempFile, { force: true }).catch(() => undefined)
+  }
 }
 
 function publicConfig(config: StoredConfig): AppConfig {
@@ -121,28 +284,53 @@ function createClient(profile: StoredProfile, bucket?: string, secretOverride?: 
  * 递归扫描本地目录，构建目录树（含大小、文件数汇总）。
  * 供上传中心的文件夹选择弹窗展示，支持多级浏览勾选。
  */
-async function scanTree(current: string, relative = ''): Promise<FolderTreeNode> {
+function reportFolderScan(context: FolderScanContext | undefined, currentPath: string, force = false): void {
+  if (!context) return
+  if (context.cancelled) throw new FolderScanCancelledError()
+  const now = Date.now()
+  if (force || now - context.lastProgressAt >= 80) {
+    context.lastProgressAt = now
+    context.sendProgress({ scannedFiles: context.scannedFiles, scannedFolders: context.scannedFolders, currentPath, scanWarnings: context.scanWarnings })
+  }
+}
+
+async function scanTree(current: string, relative = '', context?: FolderScanContext): Promise<FolderTreeNode> {
+  reportFolderScan(context, current)
+  if (context) context.scannedFolders += 1
   let entries: Dirent[] = []
   let scanWarnings = 0
   try {
     entries = await fs.readdir(current, { withFileTypes: true })
   } catch {
     scanWarnings = 1
+    if (context) context.scanWarnings += 1
   }
-  const scanned = await Promise.all(entries.map(async (entry): Promise<FolderTreeNode | null> => {
-    const absolutePath = path.join(current, entry.name)
-    const entryRelative = relative ? `${relative}/${entry.name}` : entry.name
-    if (entry.isDirectory()) {
-      const child = await scanTree(absolutePath, entryRelative)
-      return { ...child, name: entry.name, relativePath: entryRelative, absolutePath }
+  entries = entries.filter((entry) => !(entry.isDirectory() && context?.excludeNames.has(entry.name)))
+  const scanned = await Promise.all(entries.map(async (entry): Promise<{ node: FolderTreeNode | null; warnings: number }> => {
+    try {
+      reportFolderScan(context, path.join(current, entry.name))
+      const absolutePath = path.join(current, entry.name)
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        const child = await scanTree(absolutePath, entryRelative, context)
+        return { node: { ...child, name: entry.name, relativePath: entryRelative, absolutePath }, warnings: 0 }
+      }
+      if (entry.isFile()) {
+        const stat = await fs.stat(absolutePath)
+        if (context) context.scannedFiles += 1
+        reportFolderScan(context, absolutePath)
+        return { node: { name: entry.name, relativePath: entryRelative, absolutePath, isFolder: false, size: stat.size, fileCount: 1, children: [] }, warnings: 0 }
+      }
+      return { node: null, warnings: 0 }
+    } catch (error) {
+      if (error instanceof FolderScanCancelledError) throw error
+      if (context) context.scanWarnings += 1
+      return { node: null, warnings: 1 }
     }
-    if (entry.isFile()) {
-      const stat = await fs.stat(absolutePath)
-      return { name: entry.name, relativePath: entryRelative, absolutePath, isFolder: false, size: stat.size, fileCount: 1, children: [] }
-    }
-    return null
   }))
-  const children = scanned.filter((node): node is FolderTreeNode => node !== null)
+  const children = scanned.map((result) => result.node).filter((node): node is FolderTreeNode => node !== null)
+  scanWarnings += scanned.reduce((sum, result) => sum + result.warnings, 0)
+  reportFolderScan(context, current, true)
   return {
     name: path.basename(current) || current,
     relativePath: relative,
@@ -156,8 +344,13 @@ async function scanTree(current: string, relative = ''): Promise<FolderTreeNode>
 }
 
 /** 递归收集单个选中节点（文件或文件夹）下的所有文件，relativePath 从该节点开始，保留层级结构 */
-async function scanSelection(absolute: string, relative: string): Promise<LocalUploadItem[]> {
-  const stat = await fs.stat(absolute)
+async function scanSelection(absolute: string, relative: string, excludeNames = new Set<string>()): Promise<LocalUploadItem[]> {
+  let stat
+  try {
+    stat = await fs.stat(absolute)
+  } catch {
+    return []
+  }
   if (!stat.isDirectory()) {
     return [{ id: randomUUID(), absolutePath: absolute, relativePath: relative, name: path.basename(absolute), size: stat.size }]
   }
@@ -167,12 +360,17 @@ async function scanSelection(absolute: string, relative: string): Promise<LocalU
   } catch {
     return []
   }
-  const nested = await Promise.all(entries.map(async (entry) => {
+  const nested = await Promise.all(entries.filter((entry) => !(entry.isDirectory() && excludeNames.has(entry.name))).map(async (entry) => {
     const childAbsolute = path.join(absolute, entry.name)
     const childRelative = relative ? `${relative}/${entry.name}` : entry.name
-    if (entry.isDirectory()) return scanSelection(childAbsolute, childRelative)
+    if (entry.isDirectory()) return scanSelection(childAbsolute, childRelative, excludeNames)
     if (!entry.isFile()) return []
-    const fileStat = await fs.stat(childAbsolute)
+    let fileStat
+    try {
+      fileStat = await fs.stat(childAbsolute)
+    } catch {
+      return []
+    }
     return [{
       id: randomUUID(),
       absolutePath: childAbsolute,
@@ -185,7 +383,8 @@ async function scanSelection(absolute: string, relative: string): Promise<LocalU
 }
 
 /** 把用户勾选的若干节点展开为上传任务列表；若勾选节点存在祖先也被勾选，只取最顶层节点避免重复 */
-async function collectSelection(root: string, selectedPaths: string[]): Promise<LocalUploadItem[]> {
+async function collectSelection(root: string, selectedPaths: string[], excludeNames: string[] = []): Promise<LocalUploadItem[]> {
+  const excluded = new Set(excludeNames.map((name) => name.trim()).filter(Boolean))
   const sorted = [...selectedPaths].sort((a, b) => a.split('/').length - b.split('/').length)
   const topLevel: string[] = []
   for (const candidate of sorted) {
@@ -196,7 +395,7 @@ async function collectSelection(root: string, selectedPaths: string[]): Promise<
   }
   const items: LocalUploadItem[] = []
   for (const relativePath of topLevel) {
-    items.push(...await scanSelection(path.join(root, ...relativePath.split('/')), relativePath))
+    items.push(...await scanSelection(path.join(root, ...relativePath.split('/')), relativePath, excluded))
   }
   return items
 }
@@ -274,18 +473,31 @@ async function listObjectPage(client: InstanceType<typeof OSS>, request: ListObj
 }
 
 /** 递归扫描本地文件夹为上传任务，relativePath 以文件夹名开头，保留完整层级 */
-async function scanUploadFolder(root: string, current = root): Promise<LocalUploadItem[]> {
+async function scanUploadFolder(root: string, current = root, context?: FolderScanContext): Promise<LocalUploadItem[]> {
+  reportFolderScan(context, current)
+  if (context) context.scannedFolders += 1
   let entries: Dirent[] = []
   try {
     entries = await fs.readdir(current, { withFileTypes: true })
   } catch {
+    if (context) context.scanWarnings += 1
     return []
   }
+  entries = entries.filter((entry) => !(entry.isDirectory() && context?.excludeNames.has(entry.name)))
   const nested = await Promise.all(entries.map(async (entry) => {
+    reportFolderScan(context, path.join(current, entry.name))
     const absolutePath = path.join(current, entry.name)
-    if (entry.isDirectory()) return scanUploadFolder(root, absolutePath)
+    if (entry.isDirectory()) return scanUploadFolder(root, absolutePath, context)
     if (!entry.isFile()) return []
-    const stat = await fs.stat(absolutePath)
+    let stat
+    try {
+      stat = await fs.stat(absolutePath)
+    } catch {
+      if (context) context.scanWarnings += 1
+      return []
+    }
+    if (context) context.scannedFiles += 1
+    reportFolderScan(context, absolutePath)
     return [{
       id: randomUUID(),
       absolutePath,
@@ -294,6 +506,7 @@ async function scanUploadFolder(root: string, current = root): Promise<LocalUplo
       size: stat.size
     }]
   }))
+  reportFolderScan(context, current, true)
   return nested.flat()
 }
 
@@ -302,6 +515,22 @@ function objectPublicUrl(bucket: string, region: string, endpoint: string, key: 
   const host = region ? `${region}.aliyuncs.com` : endpoint
   const encodedKey = key.split('/').map(encodeURIComponent).join('/')
   return `https://${bucket}.${host}/${encodedKey}`
+}
+
+async function copyObjectVerified(client: InstanceType<typeof OSS>, source: string, target: string): Promise<void> {
+  await withRetry(() => client.copy(target, source))
+  await withRetry(() => client.head(target))
+}
+
+async function replaceDownloadedFile(tempFile: string, destination: string): Promise<void> {
+  try {
+    await fs.rename(tempFile, destination)
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(code || '')) throw error
+    await fs.rm(destination, { force: true })
+    await fs.rename(tempFile, destination)
+  }
 }
 
 /** 双击预览的大小上限：文本超限提示下载查看，避免拉大文件；图片放宽到 20MB */
@@ -412,7 +641,10 @@ async function saveObject(request: SaveObjectRequest): Promise<SaveObjectResult>
 }
 
 function registerIpc(): void {
-  ipcMain.handle('config:get', async () => publicConfig(await readConfig()))
+  ipcMain.handle('config:get', async () => {
+    const result = await readConfigWithStatus()
+    return { config: publicConfig(result.config), warning: result.warning }
+  })
 
   ipcMain.handle('config:save-profile', async (_event, input: ProfileInput) => {
     const config = await readConfig()
@@ -420,7 +652,7 @@ function registerIpc(): void {
     const stored: StoredProfile = {
       id: input.id,
       name: input.name.trim(),
-      endpoint: input.endpoint.trim().replace(/^https?:\/\//, ''),
+      endpoint: input.endpoint.trim().replace(/^https?:\/\//, '').replace(/\/+$/, ''),
       region: input.region.trim(),
       accessKeyId: input.accessKeyId.trim(),
       isDefault: input.isDefault,
@@ -447,11 +679,11 @@ function registerIpc(): void {
   ipcMain.handle('config:save-preset', async (_event, input: UploadPreset) => {
     const config = await readConfig()
     const preset = { ...input, name: input.name.trim(), description: input.description?.trim() || '', bucket: input.bucket.trim(), prefix: input.prefix.trim().replace(/^\/+|\/+$/g, '') }
-    if (preset.isDefault) config.presets.forEach((item) => { item.isDefault = false })
+    if (preset.isDefault) config.presets.forEach((item) => { if (item.profileId === preset.profileId) item.isDefault = false })
     const index = config.presets.findIndex((item) => item.id === preset.id)
     if (index >= 0) config.presets[index] = preset
     else config.presets.push(preset)
-    if (config.presets.length === 1) config.presets[0].isDefault = true
+    normalizeDefaults(config)
     await writeConfig(config)
     return publicConfig(config)
   })
@@ -459,7 +691,7 @@ function registerIpc(): void {
   ipcMain.handle('config:delete-preset', async (_event, id: string) => {
     const config = await readConfig()
     config.presets = config.presets.filter((preset) => preset.id !== id)
-    if (config.presets.length && !config.presets.some((preset) => preset.isDefault)) config.presets[0].isDefault = true
+    normalizeDefaults(config)
     await writeConfig(config)
     return publicConfig(config)
   })
@@ -486,7 +718,9 @@ function registerIpc(): void {
 
   ipcMain.handle('config:save-preferences', async (_event, input: Pick<AppConfig, 'concurrentUploads' | 'conflictStrategy'>) => {
     const config = await readConfig()
-    config.concurrentUploads = Math.max(1, Math.min(8, input.concurrentUploads))
+    if (!Number.isInteger(input.concurrentUploads) || input.concurrentUploads < 1 || input.concurrentUploads > 8) throw new Error('上传并发数必须是 1 到 8 之间的整数')
+    if (input.conflictStrategy !== 'overwrite' && input.conflictStrategy !== 'skip') throw new Error('同名文件处理策略无效')
+    config.concurrentUploads = input.concurrentUploads
     config.conflictStrategy = input.conflictStrategy
     await writeConfig(config)
     return publicConfig(config)
@@ -519,14 +753,55 @@ function registerIpc(): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('folder:tree', async (_event, root: string) => scanTree(root))
+  ipcMain.handle('folder:tree', async (event, root: string, excludeNames: string[] = []) => {
+    const context: FolderScanContext = {
+      cancelled: false,
+      scannedFiles: 0,
+      scannedFolders: 0,
+      scanWarnings: 0,
+      lastProgressAt: 0,
+      excludeNames: new Set(excludeNames.filter((name) => typeof name === 'string').map((name) => name.trim()).filter(Boolean)),
+      sendProgress: (progress) => event.sender.send('folder:scan-progress', progress)
+    }
+    activeFolderScans.set(event.sender.id, context)
+    try {
+      const tree = await scanTree(root, '', context)
+      reportFolderScan(context, root, true)
+      return tree
+    } finally {
+      activeFolderScans.delete(event.sender.id)
+    }
+  })
 
-  ipcMain.handle('folder:collect', async (_event, root: string, selectedPaths: string[]) => collectSelection(root, selectedPaths))
+  ipcMain.handle('folder:cancel-scan', (event) => {
+    const context = activeFolderScans.get(event.sender.id)
+    if (!context) return { cancelled: false }
+    context.cancelled = true
+    return { cancelled: true }
+  })
 
-  ipcMain.handle('folder:select-upload', async () => {
+  ipcMain.handle('folder:collect', async (_event, root: string, selectedPaths: string[], excludeNames: string[] = []) => collectSelection(root, selectedPaths, excludeNames))
+
+  ipcMain.handle('folder:select-upload', async (event) => {
     const result = await dialog.showOpenDialog({ title: '选择要上传的文件夹', properties: ['openDirectory'] })
     if (result.canceled || !result.filePaths[0]) return []
-    return scanUploadFolder(result.filePaths[0])
+    const context: FolderScanContext = {
+      cancelled: false,
+      scannedFiles: 0,
+      scannedFolders: 0,
+      scanWarnings: 0,
+      lastProgressAt: 0,
+      excludeNames: new Set(),
+      sendProgress: (progress) => event.sender.send('folder:scan-progress', progress)
+    }
+    activeFolderScans.set(event.sender.id, context)
+    try {
+      const items = await scanUploadFolder(result.filePaths[0], result.filePaths[0], context)
+      reportFolderScan(context, result.filePaths[0], true)
+      return items
+    } finally {
+      activeFolderScans.delete(event.sender.id)
+    }
   })
 
   /** 把拖入的本地路径（文件或文件夹，可混合）展开为上传任务列表 */
@@ -653,12 +928,18 @@ function registerIpc(): void {
           }
         }
         await fs.mkdir(path.dirname(destination), { recursive: true })
-        await withRetry(async () => {
-          assertObjectOperationActive(event.sender.id)
-          const response = await client.getStream(key)
-          if (!response.stream) throw new Error(`无法读取对象：${key}`)
-          await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(destination))
-        })
+        const tempDestination = `${destination}.${randomUUID()}.part`
+        try {
+          await withRetry(async () => {
+            assertObjectOperationActive(event.sender.id)
+            const response = await client.getStream(key)
+            if (!response.stream) throw new Error(`无法读取对象：${key}`)
+            await pipeline(response.stream as NodeJS.ReadableStream, createWriteStream(tempDestination))
+            await replaceDownloadedFile(tempDestination, destination)
+          })
+        } finally {
+          await fs.rm(tempDestination, { force: true }).catch(() => undefined)
+        }
       } catch (error) {
         rethrowIfOperationCancelled(error)
         failed += 1
@@ -738,10 +1019,10 @@ function registerIpc(): void {
       try {
         if (isFolder) {
           const targetKey = buildRenameObjectTarget(request.key, destKey, object)
-          await withRetry(() => client.copy(targetKey, object))
+          await copyObjectVerified(client, object, targetKey)
           await withRetry(() => client.delete(object))
         } else {
-          await withRetry(() => client.copy(destKey, object))
+          await copyObjectVerified(client, object, destKey)
           await withRetry(() => client.delete(object))
         }
       } catch {
@@ -785,7 +1066,7 @@ function registerIpc(): void {
         if (targetExists) {
           skipped += 1
         } else {
-          await withRetry(() => client.copy(pair.target, pair.source))
+          await copyObjectVerified(client, pair.source, pair.target)
           if (request.mode === 'move') await withRetry(() => client.delete(pair.source))
           count += 1
         }
@@ -824,7 +1105,7 @@ function registerIpc(): void {
     const config = await readConfig()
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
-    const client = createClient(profile, request.bucket)
+    const client = createClient(profile, request.bucket, undefined, request.region)
     activeUploadClients.set(request.taskId, client)
     try {
       if (request.conflictStrategy === 'skip') {
@@ -837,7 +1118,7 @@ function registerIpc(): void {
         }
       }
       await client.multipartUpload(request.objectName, request.absolutePath, {
-        parallel: 4,
+        parallel: Math.max(1, Math.min(4, Math.floor(request.partConcurrency || 1))),
         partSize: 1024 * 1024,
         progress: async (percentage: number) => {
           const stat = await fs.stat(request.absolutePath)
@@ -855,9 +1136,14 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('oss:cancel-all', () => {
-    const cancelled = activeUploadClients.size
-    activeUploadClients.forEach((client) => client.cancel())
+  ipcMain.handle('oss:cancel-all', (_event, taskIds?: string[]) => {
+    const selected = taskIds?.length ? new Set(taskIds) : undefined
+    let cancelled = 0
+    activeUploadClients.forEach((client, taskId) => {
+      if (selected && !selected.has(taskId)) return
+      cancelled += 1
+      client.cancel()
+    })
     return { cancelled }
   })
 }

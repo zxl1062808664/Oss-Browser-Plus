@@ -3,12 +3,13 @@ import {
   ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FilePen, FileUp, FileText, FolderInput, FolderOpen, FolderPlus, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Moon, Pencil, Plus, RefreshCw, Search, ScrollText, Settings, Sun, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
+import type { AppConfig, FolderScanProgress, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
 import { appendOssTroubleshootingHint, assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage } from '../../shared/oss-operations'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
-type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string; targetPresetId?: string }
+type BrowseUploadTarget = { profileId: string; bucket: string; region?: string; prefix: string }
+type UploadTask = LocalUploadItem & { status: TaskStatus; progress: number; error?: string; objectName?: string; targetPresetId?: string; browseTarget?: BrowseUploadTarget }
 type LogEntry = { id: string; time: string; level: 'info' | 'success' | 'error'; message: string }
 type OperationResultState = { title: string; summary: string; failedKeys: string[] }
 type ObjectPreviewState =
@@ -25,10 +26,13 @@ const formatBytes = (bytes: number) => {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
 }
-const normalizePrefix = (prefix: string) => prefix.replace(/^\/+|\/+$/g, '')
+  const normalizePrefix = (prefix: string) => prefix.replace(/^\/+|\/+$/g, '')
+const partConcurrencyFor = (taskConcurrency: number) => Math.max(1, Math.min(4, Math.floor(4 / Math.max(1, taskConcurrency))))
 const fullPath = (preset?: UploadPreset) => preset ? `oss://${preset.bucket}/${normalizePrefix(preset.prefix)}${preset.prefix ? '/' : ''}` : ''
 /** 未分类路径在分组与折叠记忆里使用的键 */
 const UNCATEGORIZED_GROUP = '__uncategorized__'
+const DEFAULT_FOLDER_EXCLUDES = 'node_modules, .git'
+const parseFolderExcludes = (value: string) => [...new Set(value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean))]
 /** 常用路径分组的展开状态记忆（存展开的分组，新增分类默认折叠） */
 const EXPANDED_GROUPS_KEY = 'ossupload:expanded-path-groups'
 const THEME_KEY = 'ossupload:theme'
@@ -54,6 +58,7 @@ function App() {
   const [page, setPage] = useState<Page>('upload')
   const [theme, setTheme] = useState<Theme>(loadTheme)
   const [config, setConfig] = useState<AppConfig>(emptyConfig)
+  const [configWarning, setConfigWarning] = useState('')
   const [selectedProfileId, setSelectedProfileId] = useState('')
   const [selectedPresetId, setSelectedPresetId] = useState('')
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([])
@@ -65,8 +70,10 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState('')
-  const [folderPicker, setFolderPicker] = useState<{ root: string; tree: FolderTreeNode } | null>(null)
+  const [folderPicker, setFolderPicker] = useState<{ root: string; tree: FolderTreeNode | null } | null>(null)
   const [folderScanning, setFolderScanning] = useState(false)
+  const [folderScanProgress, setFolderScanProgress] = useState<FolderScanProgress | null>(null)
+  const [folderExcludeNames, setFolderExcludeNames] = useState(DEFAULT_FOLDER_EXCLUDES)
   const [subfolder, setSubfolder] = useState('')
   const [confirmUploadOpen, setConfirmUploadOpen] = useState(false)
   const [pendingUpload, setPendingUpload] = useState<{ onlyTaskId?: string } | null>(null)
@@ -93,19 +100,25 @@ function App() {
   }, [theme])
 
   useEffect(() => {
-    window.desktopApi.getConfig().then((next) => {
+    window.desktopApi.getConfig().then((result) => {
+      const next = result.config
       setConfig(next)
+      setConfigWarning(result.warning || '')
       const profileId = next.profiles.find((item) => item.isDefault)?.id || next.profiles[0]?.id || ''
       const profilePresets = next.presets.filter((item) => item.profileId === profileId)
       const presetId = profilePresets.find((item) => item.isDefault)?.id || profilePresets[0]?.id || ''
       setSelectedProfileId(profileId)
       setSelectedPresetId(presetId)
       setSelectedTargetIds(presetId ? [presetId] : [])
+    }).catch((error) => {
+      setConfigWarning(error instanceof Error ? `配置加载失败：${error.message}` : '配置加载失败，请前往设置检查配置文件')
     })
     return window.desktopApi.onUploadProgress((event) => {
       setTasks((current) => current.map((task) => task.id === event.taskId ? { ...task, progress: event.percent } : task))
     })
   }, [])
+
+  useEffect(() => window.desktopApi.onFolderScanProgress?.(setFolderScanProgress), [])
 
   // 兜底：拖到页面空白处时阻止 DOM 导航到 file://（放置区的 drop 已自行 preventDefault）
   useEffect(() => {
@@ -144,21 +157,33 @@ function App() {
   const selectFolder = async () => {
     const root = await window.desktopApi.pickFolderRoot()
     if (!root) return
+    setFolderPicker({ root, tree: null })
+    await scanFolderTree(root, parseFolderExcludes(folderExcludeNames))
+  }
+
+  const scanFolderTree = async (root: string, excludeNames: string[]) => {
     setFolderScanning(true)
+    setFolderScanProgress(null)
     try {
-      const tree = await window.desktopApi.getFolderTree(root)
-      setFolderPicker({ root, tree })
+      const tree = await window.desktopApi.getFolderTree(root, excludeNames)
+      setFolderPicker((current) => current?.root === root ? { ...current, tree } : current)
     } catch (error) {
-      notify(error instanceof Error ? error.message : '读取文件夹失败')
+      const message = error instanceof Error ? error.message : '读取文件夹失败'
+      if (!message.includes('目录扫描已取消')) notify(message)
     } finally {
       setFolderScanning(false)
     }
   }
 
+  const closeFolderPicker = () => {
+    if (folderScanning) void window.desktopApi.cancelFolderScan()
+    setFolderPicker(null)
+  }
+
   const confirmFolderSelection = async (selectedPaths: string[]) => {
-    if (!folderPicker) return
+    if (!folderPicker?.tree) return
     try {
-      const items = await window.desktopApi.collectFolderSelection(folderPicker.root, selectedPaths)
+      const items = await window.desktopApi.collectFolderSelection(folderPicker.root, selectedPaths, parseFolderExcludes(folderExcludeNames))
       addItems(items)
       setFolderPicker(null)
     } catch (error) {
@@ -211,7 +236,8 @@ function App() {
             objectName,
             profileId: target.profileId,
             bucket: target.bucket,
-            conflictStrategy: config.conflictStrategy
+            conflictStrategy: config.conflictStrategy,
+            partConcurrency: partConcurrencyFor(config.concurrentUploads)
           })
           const status: TaskStatus = result.skipped ? 'skipped' : 'success'
           resultCounts[result.skipped ? 'skipped' : 'success'] += 1
@@ -271,6 +297,7 @@ function App() {
 
   const applyConfig = (next: AppConfig) => {
     setConfig(next)
+    setConfigWarning('')
     const profileId = next.profiles.some((item) => item.id === selectedProfileId)
       ? selectedProfileId
       : next.profiles.find((item) => item.isDefault)?.id || next.profiles[0]?.id || ''
@@ -297,11 +324,13 @@ function App() {
       </aside>
 
       <main className="content">
+        {configWarning && <div className="config-warning">{configWarning}</div>}
         {page === 'upload' ? (
           <UploadPage
             config={config} tasks={tasks} selectedProfileId={selectedProfileId} selectedPresetId={selectedPresetId}
             availablePresets={availablePresets} selectedTargets={selectedTargets}
             selectedPreset={selectedPreset} selectedProfile={selectedProfile} busy={busy} folderScanning={folderScanning}
+            scanProgress={folderScanProgress} onCancelFolderScan={() => { void window.desktopApi.cancelFolderScan() }}
             subfolder={subfolder} onSubfolderChange={setSubfolder}
             completed={completed} failed={failed} totalSize={totalSize} totalProgress={totalProgress}
             onProfileChange={selectProfile} onPresetChange={changePrimaryTarget} onTargetsChange={setSelectedTargetIds} onCopy={copyPath} onFiles={selectFiles} onFolder={selectFolder}
@@ -329,7 +358,12 @@ function App() {
         tree={folderPicker.tree}
         preset={selectedPreset}
         subfolder={subfolder}
-        onClose={() => setFolderPicker(null)}
+        scanning={folderScanning}
+        scanProgress={folderScanProgress}
+        excludeNames={folderExcludeNames}
+        onExcludeNamesChange={setFolderExcludeNames}
+        onRescan={() => scanFolderTree(folderPicker.root, parseFolderExcludes(folderExcludeNames))}
+        onClose={closeFolderPicker}
         onConfirm={confirmFolderSelection}
       />}
       {confirmUploadOpen && <Modal title="确认上传目录" wide onClose={() => setConfirmUploadOpen(false)}>
@@ -398,6 +432,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   const [previewState, setPreviewState] = useState<ObjectPreviewState>({ status: 'loading' })
   const [uploadOpen, setUploadOpen] = useState(false)
   const dragDepth = useRef(0)
+  const browseCancelRequested = useRef(false)
   const [dragOver, setDragOver] = useState(false)
   const handleBrowseDragEnter = () => {
     dragDepth.current += 1
@@ -829,50 +864,85 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
   }
 
   const enqueueToCurrentDir = (items: LocalUploadItem[]) => {
-    const newTasks: UploadTask[] = items.map((item) => ({ ...item, status: 'waiting', progress: 0 }))
+    if (!profile || !bucketName || atBucketList) return
+    const browseTarget: BrowseUploadTarget = { profileId: profile.id, bucket: bucketName, region: bucketRegion, prefix: currentPrefix }
+    const newTasks: UploadTask[] = items.map((item) => ({ ...item, status: 'waiting', progress: 0, browseTarget }))
     uploadPendingRef.current.push(...newTasks)
     setUploadQueue((queue) => [...queue, ...newTasks])
     setUploadOpen(true)
   }
 
   const runBrowseUpload = async () => {
-    if (!profile || !bucketName || uploading) return
+    if (uploading) return
     const pending = uploadPendingRef.current
     if (!pending.length) return
+    const batchTargets = [...new Set(pending.map((task) => task.browseTarget).filter(Boolean).map((target) => `oss://${target!.bucket}/${target!.prefix ? `${target!.prefix}/` : ''}`))]
+    browseCancelRequested.current = false
     setUploading(true)
     let doneCount = 0
+    let skippedCount = 0
     let failedCount = 0
     const worker = async () => {
-      while (true) {
+      while (!browseCancelRequested.current) {
         const task = uploadPendingRef.current.shift()
         if (!task) break
-        const objectName = [currentPrefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
+        const target = task.browseTarget
+        if (!target) {
+          failedCount += 1
+          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'failed', error: '上传目标已失效，请重新添加文件' } : item))
+          continue
+        }
+        const objectName = [target.prefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
         setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, objectName } : item))
         try {
-          await window.desktopApi.upload({
+          const result = await window.desktopApi.upload({
             taskId: task.id,
             absolutePath: task.absolutePath,
             objectName,
-            profileId: profile.id,
-            bucket: bucketName,
-            conflictStrategy: config.conflictStrategy
+            profileId: target.profileId,
+            bucket: target.bucket,
+            region: target.region,
+            conflictStrategy: config.conflictStrategy,
+            partConcurrency: partConcurrencyFor(config.concurrentUploads)
           })
-          doneCount += 1
-          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'success', progress: 100 } : item))
+          if (result.skipped) skippedCount += 1
+          else doneCount += 1
+          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: result.skipped ? 'skipped' : 'success', progress: 100 } : item))
         } catch (error) {
           failedCount += 1
-          setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'failed', error: error instanceof Error ? error.message : String(error) } : item))
+          if (browseCancelRequested.current) {
+            setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'cancelled', error: undefined } : item))
+          } else {
+            setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'failed', error: error instanceof Error ? error.message : String(error) } : item))
+          }
         }
       }
     }
     await Promise.all(Array.from({ length: config.concurrentUploads }, worker))
-    uploadPendingRef.current = []
     setUploading(false)
-    const summary = `上传完成：成功 ${doneCount} / ${doneCount + failedCount} 项 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`
+    const summary = `上传完成：成功 ${doneCount}，跳过 ${skippedCount}，失败 ${failedCount}，共 ${doneCount + skippedCount + failedCount} 项${batchTargets.length === 1 ? ` → ${batchTargets[0]}` : ''}`
     const message = failedCount ? appendOssTroubleshootingHint(summary) : summary
     setNotice(message)
     onLog(failedCount ? 'error' : 'success', message)
     refreshObjects()
+  }
+
+  const cancelBrowseUpload = async () => {
+    if (!uploading && !uploadPendingRef.current.length) return
+    browseCancelRequested.current = true
+    const taskIds = uploadQueue.filter((item) => item.status === 'waiting' || item.status === 'uploading').map((item) => item.id)
+    uploadPendingRef.current = []
+    await window.desktopApi.cancelAllUploads(taskIds)
+    setUploadQueue((queue) => queue.map((item) => item.status === 'waiting' || item.status === 'uploading' ? { ...item, status: 'cancelled', error: undefined } : item))
+    setNotice('已取消浏览页上传任务')
+  }
+
+  const retryBrowseUpload = (taskId: string) => {
+    if (uploading) return
+    const task = uploadQueue.find((item) => item.id === taskId)
+    if (!task || task.status !== 'failed') return
+    uploadPendingRef.current.push({ ...task, status: 'waiting', progress: 0, error: undefined })
+    setUploadQueue((queue) => queue.map((item) => item.id === taskId ? { ...item, status: 'waiting', progress: 0, error: undefined } : item))
   }
 
   const startBrowseUpload = async () => {
@@ -1021,12 +1091,13 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
     {uploadOpen && <Modal title="上传进度" wide onClose={() => setUploadOpen(false)}>
       <div className="op-form">
         {!uploadQueue.length ? <div className="picker-empty">暂无上传任务</div> : <>
-          <div className="browse-upload-list">{uploadQueue.map((task) => <div className="browse-upload-row" key={task.id}>
-            <span className="browse-upload-name" title={task.objectName || task.relativePath}>{task.relativePath}</span>
-            <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>
-            <span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? `${task.progress}%` : task.status === 'success' ? '完成' : task.status === 'failed' ? '失败' : '等待'}</span>
-          </div>)}</div>
-          <div className="op-actions"><button type="button" className="text-button" disabled={uploading} onClick={() => setUploadQueue((queue) => queue.filter((item) => !['success', 'failed'].includes(item.status)))}>清空已完成</button><button type="button" className="text-button" disabled={uploading || !uploadQueue.length} onClick={clearAllUploads}>清空所有任务</button><button type="button" className="primary" disabled={uploading || !uploadQueue.some((item) => item.status === 'waiting')} onClick={startBrowseUpload}><Upload size={16} />开始上传</button><button type="button" className="primary" onClick={() => setUploadOpen(false)}>关闭</button></div>
+           <div className="browse-upload-list">{uploadQueue.map((task) => <div className="browse-upload-row" key={task.id}>
+             <span className="browse-upload-name" title={task.error || task.objectName || task.relativePath}>{task.relativePath}</span>
+             <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>
+              <span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? `${task.progress}%` : task.status === 'success' ? '完成' : task.status === 'skipped' ? '已跳过' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : '等待'}</span>
+             {task.status === 'failed' ? <button className="icon-button small retry" title={task.error ? `重试：${task.error}` : '重试此任务'} onClick={() => retryBrowseUpload(task.id)}><RefreshCw size={14} /></button> : <span />}
+           </div>)}</div>
+           <div className="op-actions"><button type="button" className="text-button" disabled={uploading} onClick={() => setUploadQueue((queue) => queue.filter((item) => !['success', 'failed', 'cancelled'].includes(item.status)))}>清空已完成</button><button type="button" className="text-button" disabled={!uploading && !uploadQueue.some((item) => item.status === 'waiting')} onClick={cancelBrowseUpload}><CircleStop size={14} />取消上传</button><button type="button" className="text-button" disabled={uploading || !uploadQueue.length} onClick={clearAllUploads}>清空所有任务</button><button type="button" className="primary" disabled={uploading || !uploadQueue.some((item) => item.status === 'waiting')} onClick={startBrowseUpload}><Upload size={16} />开始上传</button><button type="button" className="primary" onClick={() => setUploadOpen(false)}>关闭</button></div>
         </>}
       </div>
     </Modal>}
@@ -1038,7 +1109,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
 interface UploadPageProps {
   config: AppConfig; tasks: UploadTask[]; selectedProfileId: string; selectedPresetId: string
   availablePresets: UploadPreset[]; selectedTargets: UploadPreset[]
-  selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean; folderScanning: boolean
+  selectedPreset?: UploadPreset; selectedProfile?: OssProfile; busy: boolean; folderScanning: boolean; scanProgress: FolderScanProgress | null; onCancelFolderScan: () => void
   subfolder: string; onSubfolderChange: (value: string) => void
   completed: number; failed: number; totalSize: number; totalProgress: number
   onProfileChange: (id: string) => void; onPresetChange: (id: string) => void; onTargetsChange: (ids: string[]) => void; onCopy: () => void; onFiles: () => void; onFolder: () => void
@@ -1137,7 +1208,7 @@ function UploadPage(props: UploadPageProps) {
       <section className="actions-row">
         <div className="add-actions">
           <button className="secondary" onClick={props.onFiles}><FileUp size={18} />选择文件</button>
-          <button className="secondary" disabled={props.folderScanning} onClick={props.onFolder} title="选择项目根文件夹后，勾选其中要上传的版本/子文件夹">{props.folderScanning ? <LoaderCircle className="spin" size={16} /> : <FolderOpen size={18} />}{props.folderScanning ? '读取目录中...' : '选择文件夹'}</button>
+          <button className="secondary" onClick={props.folderScanning ? props.onCancelFolderScan : props.onFolder} title="选择项目根文件夹后，勾选其中要上传的版本/子文件夹">{props.folderScanning ? <CircleStop size={16} /> : <FolderOpen size={18} />}{props.folderScanning ? `取消扫描（${(props.scanProgress?.scannedFolders || 0) + (props.scanProgress?.scannedFiles || 0)} 项）` : '选择文件夹'}</button>
         </div>
         <button className="primary upload-button" disabled={props.busy || !tasks.some((task) => task.status === 'waiting' || task.status === 'failed')} onClick={() => props.onUpload()}>
           {props.busy ? <LoaderCircle className="spin" size={18} /> : <Upload size={18} />}{props.busy ? '正在上传' : '开始上传'}
@@ -1559,18 +1630,29 @@ function SettingsEmpty({ title, text }: { title: string; text: string }) {
   return <div className="settings-empty"><Cloud size={25} /><strong>{title}</strong><span>{text}</span></div>
 }
 
-function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }: {
+function FolderPickerModal({ root, tree, preset, subfolder, scanning, scanProgress, excludeNames, onExcludeNamesChange, onRescan, onClose, onConfirm }: {
   root: string
-  tree: FolderTreeNode
+  tree: FolderTreeNode | null
   preset?: UploadPreset
   subfolder?: string
+  scanning: boolean
+  scanProgress: FolderScanProgress | null
+  excludeNames: string
+  onExcludeNamesChange: (value: string) => void
+  onRescan: () => void | Promise<void>
   onClose: () => void
   onConfirm: (selectedPaths: string[]) => void | Promise<void>
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([tree.relativePath]))
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(tree ? [tree.relativePath] : []))
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [submitting, setSubmitting] = useState(false)
   const subfolderPrefix = normalizePrefix(subfolder || '')
+
+  useEffect(() => {
+    if (!tree) return
+    setExpanded(new Set([tree.relativePath]))
+    setChecked(new Set())
+  }, [tree])
 
   const toggleExpand = (relativePath: string) => {
     setExpanded((current) => {
@@ -1582,6 +1664,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   }
 
   const expandAll = () => {
+    if (!tree) return
     const all: string[] = []
     const walk = (node: FolderTreeNode) => {
       if (node.isFolder) all.push(node.relativePath)
@@ -1591,7 +1674,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
     setExpanded(new Set(all))
   }
 
-  const collapseAll = () => setExpanded(new Set([tree.relativePath]))
+  const collapseAll = () => { if (tree) setExpanded(new Set([tree.relativePath])) }
 
   const toggleCheck = (node: FolderTreeNode) => {
     const isChecked = checked.has(node.relativePath)
@@ -1608,6 +1691,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   }
 
   const selectAll = () => {
+    if (!tree) return
     const all: string[] = []
     const walk = (node: FolderTreeNode) => {
       all.push(node.relativePath)
@@ -1620,6 +1704,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   const clearAll = () => setChecked(new Set())
 
   const summary = useMemo(() => {
+    if (!tree) return { fileCount: 0, size: 0, folderNames: [] as string[] }
     // 只统计最顶层勾选节点（其祖先未被勾选；根节点 '' 视为包含整棵树），避免重复统计
     const sorted = [...checked].sort((a, b) => a.split('/').length - b.split('/').length)
     const topLevel: string[] = []
@@ -1651,7 +1736,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   }, [checked, tree])
 
   const handleConfirm = async () => {
-    if (!summary.fileCount || submitting) return
+    if (!tree || !summary.fileCount || submitting) return
     setSubmitting(true)
     try {
       await onConfirm([...checked])
@@ -1663,27 +1748,36 @@ function FolderPickerModal({ root, tree, preset, subfolder, onClose, onConfirm }
   return <Modal title="选择要上传的文件夹" wide onClose={onClose}>
     <div className="folder-picker">
       <p className="folder-picker-hint">已读取本地项目根目录，勾选其中要上传的版本 / 子文件夹（可多选）。上传到 OSS 后会按 <b>版本名 / 子目录</b> 的结构保留层级，例如 <code>v1.0/build/app.zip</code>。</p>
-      {Boolean(tree.scanWarnings) && <p className="scan-warning">有 {tree.scanWarnings} 个目录因权限或读取错误未能扫描，这些目录不会进入上传队列。</p>}
-      <div className="folder-picker-toolbar">
-        <span className="folder-root" title={root}>{root}</span>
-        <div className="folder-toolbar-actions">
-          <button className="text-button" onClick={expandAll}>展开全部</button>
-          <button className="text-button" onClick={collapseAll}>折叠全部</button>
-          <button className="text-button" onClick={selectAll}>全选</button>
-          <button className="text-button" onClick={clearAll}>清空</button>
+      <div className="folder-scan-settings">
+        <label>排除目录名（逗号分隔）<input value={excludeNames} disabled={scanning} placeholder="例如：node_modules, dist" onChange={(event) => onExcludeNamesChange(event.target.value)} /></label>
+        <button className="secondary compact" disabled={scanning} onClick={onRescan}><RefreshCw size={14} />重新扫描</button>
+      </div>
+      {scanning && <div className="folder-scan-state"><LoaderCircle className="spin" size={20} /><span>正在扫描目录… 已发现 {scanProgress?.scannedFolders || 0} 个文件夹、{scanProgress?.scannedFiles || 0} 个文件</span><button className="text-button" onClick={onClose}>取消扫描</button></div>}
+      {!scanning && !tree && <div className="folder-scan-state"><span>目录扫描未完成，请重新扫描。</span></div>}
+      {tree && <>
+        {Boolean(tree.scanWarnings) && <p className="scan-warning">有 {tree.scanWarnings} 个目录因权限或读取错误未能扫描，这些目录不会进入上传队列。</p>}
+        <div className="folder-picker-toolbar">
+          <span className="folder-root" title={root}>{root}</span>
+          <div className="folder-toolbar-actions">
+            <button className="text-button" onClick={expandAll}>展开全部</button>
+            <button className="text-button" onClick={collapseAll}>折叠全部</button>
+            <button className="text-button" onClick={selectAll}>全选</button>
+            <button className="text-button" onClick={clearAll}>清空</button>
+          </div>
         </div>
-      </div>
-      <div className="folder-tree">
-        <FolderTreeBranch node={tree} depth={0} expanded={expanded} checked={checked} onToggleExpand={toggleExpand} onToggleCheck={toggleCheck} />
-      </div>
-      <div className="folder-picker-footer">
-        <span className="folder-selected">{summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '未勾选任何内容'}</span>
-        <span className="folder-preview" title={preset ? `${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
-          ? `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
-          : `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}`) : '未选择上传路径'}</span>
-        <button className="secondary" onClick={onClose}>取消</button>
-        <button className="primary" disabled={!summary.fileCount || submitting} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${summary.fileCount} 个文件`}</button>
-      </div>
+        <div className="folder-tree">
+          <FolderTreeBranch node={tree} depth={0} expanded={expanded} checked={checked} onToggleExpand={toggleExpand} onToggleCheck={toggleCheck} />
+        </div>
+        <div className="folder-picker-footer">
+          <span className="folder-selected">{summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '未勾选任何内容'}</span>
+          <span className="folder-preview" title={preset ? `${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
+            ? `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
+            : `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}`) : '未选择上传路径'}</span>
+          <button className="secondary" onClick={onClose}>取消</button>
+          <button className="primary" disabled={!summary.fileCount || submitting || scanning} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${summary.fileCount} 个文件`}</button>
+        </div>
+      </>}
+      {!tree && <div className="folder-picker-footer"><span /><span /><button className="secondary" onClick={onClose}>关闭</button><span /></div>}
     </div>
   </Modal>
 }

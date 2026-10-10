@@ -60,13 +60,28 @@ export interface FolderTreeNode {
   children: FolderTreeNode[]
 }
 
+export interface FolderScanProgress {
+  scannedFiles: number
+  scannedFolders: number
+  currentPath?: string
+  scanWarnings?: number
+}
+
+export interface ConfigLoadResult {
+  config: AppConfig
+  warning?: string
+}
+
 export interface UploadRequest {
   taskId: string
   absolutePath: string
   objectName: string
   profileId: string
   bucket: string
+  region?: string
   conflictStrategy: 'overwrite' | 'skip'
+  /** 单个文件的分片并发数，由渲染层按全局任务并发数计算 */
+  partConcurrency?: number
 }
 
 export interface OssObjectItem {
@@ -201,7 +216,7 @@ export interface OpProgressEvent {
 }
 
 export interface DesktopApi {
-  getConfig: () => Promise<AppConfig>
+  getConfig: () => Promise<ConfigLoadResult>
   saveProfile: (profile: ProfileInput) => Promise<AppConfig>
   deleteProfile: (id: string) => Promise<AppConfig>
   savePreset: (preset: UploadPreset) => Promise<AppConfig>
@@ -215,13 +230,14 @@ export interface DesktopApi {
   /** 把拖放的 File 对象转成真实本地路径（Electron 32+ 用 webUtils.getPathForFile，只能在预加载层调用） */
   getPathsForFiles: (files: File[]) => string[]
   pickFolderRoot: () => Promise<string | null>
-  getFolderTree: (root: string) => Promise<FolderTreeNode>
-  collectFolderSelection: (root: string, selectedRelativePaths: string[]) => Promise<LocalUploadItem[]>
+  getFolderTree: (root: string, excludeNames?: string[]) => Promise<FolderTreeNode>
+  cancelFolderScan: () => Promise<{ cancelled: boolean }>
+  collectFolderSelection: (root: string, selectedRelativePaths: string[], excludeNames?: string[]) => Promise<LocalUploadItem[]>
   selectFolderForUpload: () => Promise<LocalUploadItem[]>
   /** 把拖入的本地文件/文件夹路径展开为上传项（文件→单条，文件夹→保留文件夹名为顶层目录递归展开） */
   collectFromPaths: (paths: string[]) => Promise<LocalUploadItem[]>
   upload: (request: UploadRequest) => Promise<{ skipped?: boolean }>
-  cancelAllUploads: () => Promise<{ cancelled: number }>
+  cancelAllUploads: (taskIds?: string[]) => Promise<{ cancelled: number }>
   setObjectOperationActive: (active: boolean) => Promise<void>
   cancelObjectOperation: () => Promise<{ cancelled: boolean }>
   listObjects: (request: ListObjectsRequest) => Promise<OssObjectItem[]>
@@ -237,5 +253,6 @@ export interface DesktopApi {
   saveObject: (request: SaveObjectRequest) => Promise<SaveObjectResult>
   copyText: (text: string) => Promise<void>
   onUploadProgress: (callback: (event: UploadProgressEvent) => void) => () => void
+  onFolderScanProgress?: (callback: (event: FolderScanProgress) => void) => () => void
   onOpProgress: (callback: (event: OpProgressEvent) => void) => () => void
 }

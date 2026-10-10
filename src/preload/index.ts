@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { DesktopApi, OpProgressEvent, UploadProgressEvent } from '../shared/types'
+import type { DesktopApi, FolderScanProgress, OpProgressEvent, UploadProgressEvent } from '../shared/types'
 import { appendOssTroubleshootingHint } from '../shared/oss-operations'
 
 function invokeOss<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -35,12 +35,13 @@ const api: DesktopApi = {
     })
     .filter((value): value is string => Boolean(value)),
   pickFolderRoot: () => ipcRenderer.invoke('folder:pick-root'),
-  getFolderTree: (root) => ipcRenderer.invoke('folder:tree', root),
-  collectFolderSelection: (root, selectedPaths) => ipcRenderer.invoke('folder:collect', root, selectedPaths),
+  getFolderTree: (root, excludeNames) => ipcRenderer.invoke('folder:tree', root, excludeNames),
+  cancelFolderScan: () => ipcRenderer.invoke('folder:cancel-scan'),
+  collectFolderSelection: (root, selectedPaths, excludeNames) => ipcRenderer.invoke('folder:collect', root, selectedPaths, excludeNames),
   selectFolderForUpload: () => ipcRenderer.invoke('folder:select-upload'),
   collectFromPaths: (paths) => ipcRenderer.invoke('files:collect-from-paths', paths),
   upload: (request) => invokeOss('oss:upload', request),
-  cancelAllUploads: () => ipcRenderer.invoke('oss:cancel-all'),
+  cancelAllUploads: (taskIds) => ipcRenderer.invoke('oss:cancel-all', taskIds),
   setObjectOperationActive: (active) => ipcRenderer.invoke('oss:set-operation-active', active),
   cancelObjectOperation: () => ipcRenderer.invoke('oss:cancel-operation'),
   listObjects: (request) => invokeOss('oss:list-objects', request),
@@ -59,6 +60,11 @@ const api: DesktopApi = {
     const listener = (_event: Electron.IpcRendererEvent, value: UploadProgressEvent) => callback(value)
     ipcRenderer.on('oss:upload-progress', listener)
     return () => ipcRenderer.removeListener('oss:upload-progress', listener)
+  },
+  onFolderScanProgress: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: FolderScanProgress) => callback(value)
+    ipcRenderer.on('folder:scan-progress', listener)
+    return () => ipcRenderer.removeListener('folder:scan-progress', listener)
   },
   onOpProgress: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, value: OpProgressEvent) => callback(value)

@@ -14,7 +14,7 @@ if (!window.desktopApi) {
   let previewConfig: AppConfig = { profiles: [demoProfile, backupProfile], presets: [demoPreset, testPreset, backupPreset], categories: [{ id: 'cat-release', name: '正式发布' }], concurrentUploads: 3, conflictStrategy: 'overwrite' }
   let previewFailureInjected = false
   window.desktopApi = {
-    getConfig: async () => previewConfig,
+    getConfig: async () => ({ config: previewConfig }),
     saveProfile: async (profile) => { previewConfig = { ...previewConfig, profiles: [...previewConfig.profiles.filter((item) => item.id !== profile.id), { ...profile, hasSecret: true }] }; return previewConfig },
     deleteProfile: async (id) => { previewConfig = { ...previewConfig, profiles: previewConfig.profiles.filter((item) => item.id !== id) }; return previewConfig },
     savePreset: async (preset) => { previewConfig = { ...previewConfig, presets: [...previewConfig.presets.filter((item) => item.id !== preset.id), preset] }; return previewConfig },
@@ -46,6 +46,7 @@ if (!window.desktopApi) {
         ] }
       ]
     }),
+    cancelFolderScan: async () => ({ cancelled: false }),
     collectFolderSelection: async (_root, selectedPaths) => selectedPaths.flatMap((relativePath) => [{ id: crypto.randomUUID(), absolutePath: `C:/projects/demo/${relativePath}/sample.zip`, relativePath: `${relativePath}/sample.zip`, name: 'sample.zip', size: 1024 * 1024 }]),
     selectFolderForUpload: async () => [{ id: crypto.randomUUID(), absolutePath: 'C:/upload/demo/folder/a.txt', relativePath: 'folder/a.txt', name: 'a.txt', size: 1024 }],
     collectFromPaths: async (paths) => paths.map((absolutePath) => ({ id: crypto.randomUUID(), absolutePath, relativePath: absolutePath.split('/').pop() || absolutePath, name: absolutePath.split('/').pop() || absolutePath, size: 1024 * 1024 })),
