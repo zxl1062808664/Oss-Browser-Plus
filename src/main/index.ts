@@ -613,7 +613,8 @@ function textContentType(key: string): string {
 /**
  * 保存文本对象内容（覆盖写）。
  * 仅允许文本分类，写入前二次校验大小与二进制内容；
- * etag 存在时用 If-Match 做乐观并发控制，避免覆盖他人已提交的修改。
+ * etag 存在时先重新读取对象并比较 ETag，避免覆盖已经被他人修改的内容。
+ * OSS PutObject 不支持 If-Match，因此校验通过后使用普通覆盖写入。
  */
 async function saveObject(request: SaveObjectRequest): Promise<SaveObjectResult> {
   const config = await readConfig()
@@ -626,9 +627,15 @@ async function saveObject(request: SaveObjectRequest): Promise<SaveObjectResult>
   const buffer = Buffer.from(request.content, 'utf8')
   const client = createClient(profile, request.bucket, undefined, request.region)
   const headers: Record<string, string> = { 'Content-Type': textContentType(request.key) }
-  if (request.etag) headers['If-Match'] = request.etag
 
   try {
+    if (request.etag) {
+      const head = await withRetry(() => client.head(request.key))
+      const currentEtag = String(head.res?.headers?.etag || '').replace(/"/g, '')
+      if (currentEtag && currentEtag !== request.etag.replace(/"/g, '')) {
+        throw new Error('文件已被其他人修改，请关闭后重新打开再编辑，避免覆盖对方的改动')
+      }
+    }
     const result = await withRetry(() => client.put(request.key, buffer, { headers }))
     const responseEtag = String((result as { res?: { headers?: Record<string, unknown> } })?.res?.headers?.etag || '').replace(/"/g, '')
     return { etag: responseEtag || undefined, size: buffer.byteLength }

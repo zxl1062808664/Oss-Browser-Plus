@@ -168,7 +168,7 @@ export interface PreviewObjectRequest extends OssMutationRequest {
 
 /**
  * 保存文本对象内容的请求。
- * etag 为打开预览时拿到的对象 ETag，用于 If-Match 条件写入，避免覆盖他人的并发修改。
+ * etag 为打开预览时拿到的对象 ETag，保存前会重新读取并比较，避免覆盖他人的并发修改。
  */
 export interface SaveObjectRequest extends OssMutationRequest {
   key: string

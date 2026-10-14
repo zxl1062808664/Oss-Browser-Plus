@@ -1529,7 +1529,7 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
 
 /**
  * OSS 文件预览弹窗。
- * 文本：可编辑（受 500 KB 上限约束），支持保存 / 还原，保存成功后回调刷新列表。
+ * 文本：可编辑（受 500 KB 上限约束），支持保存 / 还原，保存成功后关闭弹窗并刷新列表。
  * 图片与超限文本：只读展示。
  */
 function PreviewModal({ item, state, context, onNotice, onSaved, onClose }: {
@@ -1581,6 +1581,7 @@ function PreviewModal({ item, state, context, onNotice, onSaved, onClose }: {
       setSize(result.size)
       onNotice(`「${item.name}」已保存（${formatBytes(result.size)}）`)
       onSaved()
+      onClose()
     } catch (error) {
       // 失败时保留草稿，只把原因显示在弹窗内
       setSaveError(error instanceof Error ? error.message : '保存失败')

@@ -3,7 +3,7 @@ export interface ObjectTransferPair {
   target: string
 }
 
-export const OSS_TROUBLESHOOTING_HINT = '排查建议：请检查 OSS 账号是否欠费或网络连接是否正常'
+export const OSS_TROUBLESHOOTING_HINT = '排查建议：请根据上方 OSS 错误码检查权限、Endpoint 或网络；仅凭此错误无法判断账号是否欠费'
 
 export function appendOssTroubleshootingHint(message: string): string {
   if (message.includes(OSS_TROUBLESHOOTING_HINT)) return message
