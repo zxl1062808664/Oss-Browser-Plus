@@ -6,6 +6,7 @@ import {
   buildRenameObjectTarget,
   buildTransferPairs,
   classifyObjectPreview,
+  collectFolderKeys,
   detectLineEnding,
   isTextEditable,
   normalizeLineEnding,
@@ -83,6 +84,44 @@ describe('transfer path calculation', () => {
       { source: 'apps/release/setup.exe', target: 'archive/release/setup.exe' },
       { source: 'apps/release/x64/setup.exe', target: 'archive/release/x64/setup.exe' }
     ])
+  })
+
+  it('renames the copied folder while keeping descendants under the new root', () => {
+    expect(buildTransferPairs('apps/assets/', [
+      'apps/assets/',
+      'apps/assets/readme.txt',
+      'apps/assets/images/logo.png'
+    ], 'backup', 'Assets-Italy')).toEqual([
+      { source: 'apps/assets/', target: 'backup/Assets-Italy/' },
+      { source: 'apps/assets/readme.txt', target: 'backup/Assets-Italy/readme.txt' },
+      { source: 'apps/assets/images/logo.png', target: 'backup/Assets-Italy/images/logo.png' }
+    ])
+  })
+
+  it('keeps the complete folder structure while excluding files', () => {
+    const folderKeys = collectFolderKeys('apps/release/', [
+      'apps/release/',
+      'apps/release/setup.exe',
+      'apps/release/empty/',
+      'apps/release/x64/setup.exe',
+      'apps/release/x64/deep/data.json'
+    ])
+    expect(buildTransferPairs('apps/release/', folderKeys, 'archive', 'release-structure')).toEqual([
+      { source: 'apps/release/', target: 'archive/release-structure/' },
+      { source: 'apps/release/empty/', target: 'archive/release-structure/empty/' },
+      { source: 'apps/release/x64/', target: 'archive/release-structure/x64/' },
+      { source: 'apps/release/x64/deep/', target: 'archive/release-structure/x64/deep/' }
+    ])
+  })
+
+  it('keeps selected file names unchanged when a folder override is present', () => {
+    expect(buildTransferPairs('apps/readme.txt', ['apps/readme.txt'], 'archive', 'renamed-folder')).toEqual([
+      { source: 'apps/readme.txt', target: 'archive/readme.txt' }
+    ])
+  })
+
+  it('rejects invalid copied folder names', () => {
+    expect(() => buildTransferPairs('apps/release/', ['apps/release/'], 'archive', 'bad/name')).toThrow('文件夹名称')
   })
 
   it('rejects the same parent and descendant destinations', () => {

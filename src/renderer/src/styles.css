@@ -386,6 +386,17 @@ h1, h2, p { margin: 0; }
 .picker-create input { min-width: 0; height: 32px; padding: 0 9px; border: 1px solid #cdd5df; border-radius: 5px; color: #293746; background: #fff; font-size: 11px; }
 .op-option-row { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 10px; padding: 6px 10px; color: #53606f; background: #f6f8fa; border: 1px solid var(--border); border-radius: 5px; font-size: 11px; }
 .op-option-row .segmented button { min-width: 52px; height: 25px; }
+.folder-rename-panel { padding: 10px; margin-top: 12px; background: #f6f8fa; border: 1px solid var(--border); border-radius: 5px; }
+.folder-rename-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: #53606f; font-size: 11px; }
+.folder-rename-heading strong { color: #3a4b5f; font-weight: 600; }
+.folder-rename-heading span { color: #7b8794; font-size: 10px; }
+.folder-rename-list { display: grid; gap: 8px; max-height: 150px; overflow-y: auto; margin-top: 9px; }
+.folder-rename-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, .8fr); align-items: center; gap: 8px; }
+.folder-rename-source { min-width: 0; overflow: hidden; color: #415064; font: 11px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.folder-rename-input { width: 100%; min-width: 0; box-sizing: border-box; height: 30px; padding: 0 8px; border: 1px solid #cdd5df; border-radius: 5px; color: #293746; background: #fff; font-size: 11px; }
+.folder-rename-input:focus { outline: none; border-color: #6f9ee8; box-shadow: 0 0 0 2px rgba(111, 158, 232, .15); }
+.folder-rename-input.invalid { border-color: #d67a7a; }
+.folder-rename-error { grid-column: 2; margin-top: -5px; color: #a23d3d; font-size: 10px; }
 .scan-warning { padding: 8px 10px; margin-top: 10px; color: #8a6414; background: #fdf5e3; border: 1px solid #ecd69d; border-radius: 5px; font-size: 11px; line-height: 1.5; }
 .picker-breadcrumb { min-width: 0; overflow: hidden; color: #415064; font: 11px Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
 .picker-nav { flex: none; display: flex; align-items: center; gap: 8px; }
@@ -468,7 +479,8 @@ h1, h2, p { margin: 0; }
 [data-theme="dark"] .category-add > input,
 [data-theme="dark"] .url-field-head select,
 [data-theme="dark"] .browse-option select,
-[data-theme="dark"] .picker-create input { color: #e7edf4; background: #1a2632; border-color: #415364; }
+[data-theme="dark"] .picker-create input,
+[data-theme="dark"] .folder-rename-input { color: #e7edf4; background: #1a2632; border-color: #415364; }
 [data-theme="dark"] .icon-button:hover,
 [data-theme="dark"] .secondary:hover { color: #fff; background: #243442; border-color: #5b6d7e; }
 [data-theme="dark"] .primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
@@ -544,6 +556,12 @@ h1, h2, p { margin: 0; }
 [data-theme="dark"] .url-field label,
 [data-theme="dark"] .op-option-row,
 [data-theme="dark"] .folder-selected { color: #b5c2ce; }
+[data-theme="dark"] .folder-rename-panel { background: #202d3a; border-color: var(--border); }
+[data-theme="dark"] .folder-rename-heading,
+[data-theme="dark"] .folder-rename-source { color: #c5d0dc; }
+[data-theme="dark"] .folder-rename-heading strong { color: #e3eaf1; }
+[data-theme="dark"] .folder-rename-heading span { color: #9aa8b7; }
+[data-theme="dark"] .folder-rename-error { color: #f39a9a; }
 [data-theme="dark"] .browse-band,
 [data-theme="dark"] .summary-strip { color: #b7c5d1; background: #202d3a; border-color: #354656; }
 [data-theme="dark"] .summary-strip b,

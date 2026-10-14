@@ -47,7 +47,7 @@ export function buildRenameObjectTarget(sourceKey: string, destinationKey: strin
   return relative ? `${destinationKey}${relative}` : destinationKey
 }
 
-export function buildTransferPairs(sourceKey: string, objectKeys: string[], destinationPrefixInput: string): ObjectTransferPair[] {
+export function buildTransferPairs(sourceKey: string, objectKeys: string[], destinationPrefixInput: string, folderNameOverrideInput?: string): ObjectTransferPair[] {
   const destinationPrefix = normalizeObjectPrefix(destinationPrefixInput)
   if (!sourceKey.endsWith('/')) {
     const name = sourceKey.split('/').pop() || ''
@@ -61,7 +61,9 @@ export function buildTransferPairs(sourceKey: string, objectKeys: string[], dest
     throw new Error(`不能把文件夹复制或移动到自身内部：${sourceKey}`)
   }
 
-  const folderName = sourcePrefix.split('/').pop() || ''
+  const folderName = folderNameOverrideInput === undefined
+    ? sourcePrefix.split('/').pop() || ''
+    : validateObjectEntryName(folderNameOverrideInput, '文件夹名称')
   const destinationFolder = [destinationPrefix, folderName].filter(Boolean).join('/')
   return objectKeys.map((objectKey) => {
     if (!objectKey.startsWith(sourceKey)) throw new Error(`对象不属于待处理文件夹：${objectKey}`)
@@ -69,6 +71,26 @@ export function buildTransferPairs(sourceKey: string, objectKeys: string[], dest
     const target = relative ? `${destinationFolder}/${relative}` : `${destinationFolder}/`
     if (target === objectKey) throw new Error(`目标位置与原位置相同：${objectKey}`)
     return { source: objectKey, target }
+  })
+}
+
+/** 从文件与目录标记 key 中提取完整的文件夹结构，不包含文件 key。 */
+export function collectFolderKeys(sourceKey: string, objectKeys: string[]): string[] {
+  if (!sourceKey.endsWith('/')) throw new Error(`不是文件夹 key：${sourceKey}`)
+  const folders = new Set<string>([sourceKey])
+  for (const objectKey of objectKeys) {
+    if (!objectKey.startsWith(sourceKey)) throw new Error(`对象不属于待处理文件夹：${objectKey}`)
+    const relative = objectKey.slice(sourceKey.length)
+    const segments = relative.split('/')
+    let folder = sourceKey
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      folder += `${segments[index]}/`
+      folders.add(folder)
+    }
+  }
+  return [...folders].sort((left, right) => {
+    const depthDifference = left.split('/').length - right.split('/').length
+    return depthDifference || (left < right ? -1 : left > right ? 1 : 0)
   })
 }
 

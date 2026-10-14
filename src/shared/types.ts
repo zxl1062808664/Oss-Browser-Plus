@@ -107,6 +107,9 @@ export interface ListObjectsRequest {
 
 export type ObjectConflictStrategy = 'overwrite' | 'skip'
 
+/** 复制文件夹时是否包含其下的文件；仅复制模式生效，移动始终包含全部内容。 */
+export type ObjectFolderCopyMode = 'all' | 'folder'
+
 export interface ListObjectsPageRequest extends ListObjectsRequest {
   marker?: string
 }
@@ -147,6 +150,10 @@ export interface TransferObjectsRequest extends OssMutationRequest {
   destinationPrefix: string
   mode: 'copy' | 'move'
   conflictStrategy?: ObjectConflictStrategy
+  /** 复制文件夹时的处理方式；未提供或移动时均按完整内容处理 */
+  folderCopyMode?: ObjectFolderCopyMode
+  /** 复制文件夹时按源 key 指定目标文件夹名称；文件对象不受影响 */
+  folderNameOverrides?: Record<string, string>
 }
 
 export interface CreateFolderRequest extends OssMutationRequest {

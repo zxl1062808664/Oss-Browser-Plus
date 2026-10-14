@@ -3,8 +3,8 @@ import {
   ArrowUp, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleStop, Clipboard, Cloud, Copy, Download, FilePen, FileUp, FileText, FolderInput, FolderOpen, FolderPlus, FolderSearch, Gauge, HardDriveUpload,
   Link2, ListChecks, ListPlus, LoaderCircle, MapPin, Moon, Pencil, Plus, RefreshCw, Search, ScrollText, Settings, Sun, Trash2, Upload, X
 } from 'lucide-react'
-import type { AppConfig, FolderScanProgress, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
-import { appendOssTroubleshootingHint, assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage } from '../../shared/oss-operations'
+import type { AppConfig, FolderScanProgress, FolderTreeNode, LocalUploadItem, ObjectConflictStrategy, ObjectFolderCopyMode, ObjectPreview, OpProgressEvent, OssBucketItem, OssObjectItem, OssProfile, PathCategory, ProfileInput, UploadPreset } from '../../shared/types'
+import { appendOssTroubleshootingHint, assertSavableTextContent, classifyObjectPreview, detectLineEnding, isTextEditable, normalizeLineEnding, textEditLimitMessage, validateObjectEntryName } from '../../shared/oss-operations'
 
 type Page = 'upload' | 'browse' | 'settings'
 type TaskStatus = 'waiting' | 'uploading' | 'success' | 'failed' | 'skipped' | 'cancelled'
@@ -771,7 +771,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
 
   const requestTransfer = (mode: 'copy' | 'move') => setTransferTarget(mode)
 
-  const confirmTransfer = async (destinationPrefix: string, conflictStrategy: ObjectConflictStrategy) => {
+  const confirmTransfer = async (destinationPrefix: string, conflictStrategy: ObjectConflictStrategy, folderCopyMode: ObjectFolderCopyMode = 'all', folderNameOverrides: Record<string, string> = {}) => {
     if (!transferTarget || !selectedKeys.length || !profile || !bucketName) return
     setBusyOp(true)
     const action = transferTarget === 'copy' ? '复制' : '移动'
@@ -779,7 +779,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
     try {
       const result = await window.desktopApi.transferObjects({
         profileId: profile.id, bucket: bucketName, region: bucketRegion,
-        sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget, conflictStrategy
+        sourceKeys: selectedKeys, destinationPrefix, mode: transferTarget, conflictStrategy,
+        folderCopyMode: transferTarget === 'copy' ? folderCopyMode : undefined,
+        folderNameOverrides: transferTarget === 'copy' ? folderNameOverrides : undefined
       })
       const summary = `${action}完成：${result.count} 个成功${result.skipped ? `，${result.skipped} 个同名对象已跳过` : ''}${result.failed ? `，${result.failed} 个失败` : ''}`
       const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
@@ -1855,7 +1857,7 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
   items: OssObjectItem[]
   busy: boolean
   onCancel: () => void
-  onSelect: (prefix: string, conflictStrategy: ObjectConflictStrategy) => void
+  onSelect: (prefix: string, conflictStrategy: ObjectConflictStrategy, folderCopyMode: ObjectFolderCopyMode, folderNameOverrides: Record<string, string>) => void
 }) {
   const [currentPrefix, setCurrentPrefix] = useState('')
   const [folders, setFolders] = useState<OssObjectItem[]>([])
@@ -1864,9 +1866,29 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
   const [error, setError] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
   const [conflictStrategy, setConflictStrategy] = useState<ObjectConflictStrategy>('skip')
+  const [folderCopyMode, setFolderCopyMode] = useState<ObjectFolderCopyMode>('all')
   const [newFolderName, setNewFolderName] = useState('')
   const [creatingDestination, setCreatingDestination] = useState(false)
+  const selectedFolders = items.filter((item) => item.isFolder)
+  const [folderNameOverrides, setFolderNameOverrides] = useState<Record<string, string>>(
+    () => Object.fromEntries(selectedFolders.map((item) => [item.key, item.name]))
+  )
   const action = mode === 'copy' ? '复制' : '移动'
+  const hasSelectedFolders = selectedFolders.length > 0
+  const selectionHint = hasSelectedFolders
+    ? folderCopyMode === 'folder' && mode === 'copy' ? '（仅复制文件夹结构）' : '（文件夹包含其下所有内容）'
+    : ''
+  const folderNameError = mode === 'copy'
+    ? selectedFolders.map((item) => {
+      const value = folderNameOverrides[item.key] ?? item.name
+      try {
+        validateObjectEntryName(value, '文件夹名称')
+        return ''
+      } catch (error) {
+        return error instanceof Error ? error.message : '文件夹名称无效'
+      }
+    }).find(Boolean) || ''
+    : ''
 
   useEffect(() => {
     if (!profileId || !bucket) return
@@ -1905,8 +1927,28 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
   }
 
   return <div className="op-form">
-    <p className="op-tip">{action}以下 {items.length} 项到所选目录（文件夹会包含其下所有内容）：</p>
+    <p className="op-tip">{action}以下 {items.length} 项到所选目录{selectionHint}：</p>
     <div className="op-target-list">{items.slice(0, 6).map((item) => <code key={item.key}>{item.key}{item.isFolder ? '/' : ''}</code>)}{items.length > 6 && <code>…等 {items.length} 项</code>}</div>
+
+    {mode === 'copy' && hasSelectedFolders && <div className="folder-rename-panel">
+      <div className="folder-rename-heading"><strong>复制后的文件夹名称</strong><span>默认使用原名称，可在复制前修改</span></div>
+      <div className="folder-rename-list">
+        {selectedFolders.map((item) => {
+          const value = folderNameOverrides[item.key] ?? item.name
+          let errorMessage = ''
+          try {
+            validateObjectEntryName(value, '文件夹名称')
+          } catch (error) {
+            errorMessage = error instanceof Error ? error.message : '文件夹名称无效'
+          }
+          return <label className="folder-rename-item" key={item.key}>
+            <span className="folder-rename-source" title={item.key}>{item.name}</span>
+            <input className={errorMessage ? 'folder-rename-input invalid' : 'folder-rename-input'} aria-label={`复制后的 ${item.name} 文件夹名称`} value={value} disabled={busy} onChange={(event) => setFolderNameOverrides((current) => ({ ...current, [item.key]: event.target.value }))} />
+            {errorMessage && <small className="folder-rename-error">{errorMessage}</small>}
+          </label>
+        })}
+      </div>
+    </div>}
 
     <div className="picker-path">
       <span className="picker-breadcrumb" title={currentPrefix || 'Bucket 根目录'}>{currentPrefix ? `目录：${currentPrefix}/` : '目录：Bucket 根目录'}</span>
@@ -1924,13 +1966,19 @@ function OssFolderPicker({ profileId, bucket, region, mode, items, busy, onCance
         : folders.map((folder) => <button type="button" key={folder.key} className="picker-dir" disabled={busy} onClick={() => setCurrentPrefix(folder.key.replace(/\/+$/, ''))}><FolderOpen size={16} /><span>{folder.name}</span><ChevronRight size={13} /></button>)}
     </div>
     {!loading && !error && <div className="picker-filecount">本目录包含 {fileCount} 个文件；选中的 {items.length} 项将以各自的名称进入所选目录内。</div>}
+    {mode === 'copy' && hasSelectedFolders && <div className="op-option-row"><span>文件夹复制方式</span><div className="segmented"><button type="button" className={folderCopyMode === 'all' ? 'active' : ''} onClick={() => setFolderCopyMode('all')}>文件夹及全部内容</button><button type="button" className={folderCopyMode === 'folder' ? 'active' : ''} onClick={() => setFolderCopyMode('folder')}>仅文件夹</button></div></div>}
     <div className="op-option-row"><span>目标存在同名对象</span><div className="segmented"><button type="button" className={conflictStrategy === 'skip' ? 'active' : ''} onClick={() => setConflictStrategy('skip')}>跳过</button><button type="button" className={conflictStrategy === 'overwrite' ? 'active' : ''} onClick={() => setConflictStrategy('overwrite')}>覆盖</button></div></div>
 
     {mode === 'move' && <p className="op-warn">移动完成后，原位置的对象会被删除。</p>}
 
     <div className="op-actions">
       <button type="button" className="text-button" disabled={busy} onClick={onCancel}>取消</button>
-      <button type="button" className="primary" disabled={busy || loading} onClick={() => onSelect(currentPrefix, conflictStrategy)}><Check size={16} />选择当前目录</button>
+      <button type="button" className="primary" disabled={busy || loading || Boolean(folderNameError)} onClick={() => onSelect(
+        currentPrefix,
+        conflictStrategy,
+        mode === 'copy' ? folderCopyMode : 'all',
+        mode === 'copy' ? Object.fromEntries(selectedFolders.map((item) => [item.key, (folderNameOverrides[item.key] ?? item.name).trim()])) : {}
+      )}><Check size={16} />选择当前目录</button>
     </div>
   </div>
 }

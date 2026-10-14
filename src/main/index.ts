@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
 import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderScanProgress, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, SaveObjectRequest, SaveObjectResult, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
-import { assertSavableTextContent, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, normalizeObjectPrefix } from '../shared/oss-operations'
+import { assertSavableTextContent, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, collectFolderKeys, normalizeObjectPrefix } from '../shared/oss-operations'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -409,28 +409,54 @@ async function expandObjectKeys(
   client: InstanceType<typeof OSS>,
   keys: string[],
   onScan?: (scanned: number) => void,
-  assertActive?: () => void
+  assertActive?: () => void,
+  includeFolderPrefixes = false
 ): Promise<string[]> {
-  const result: string[] = []
+  const result = new Set<string>()
   for (const key of keys) {
     assertActive?.()
     if (!key.endsWith('/')) {
-      result.push(key)
+      result.add(key)
       continue
     }
-    let marker: string | undefined
-    do {
-      assertActive?.()
-      const page = await withRetry(() => client.list({ prefix: key, 'max-keys': 1000, ...(marker ? { marker } : {}) }))
-      for (const object of page.objects || []) {
-        // 目录标记对象也要纳入操作，否则空目录或旧目录标记会残留。
-        result.push(object.name)
-      }
-      marker = page.isTruncated ? page.nextMarker : undefined
-      onScan?.(result.length)
-    } while (marker)
+    if (!includeFolderPrefixes) {
+      let marker: string | undefined
+      do {
+        assertActive?.()
+        const page = await withRetry(() => client.list({ prefix: key, 'max-keys': 1000, ...(marker ? { marker } : {}) }))
+        for (const object of page.objects || []) {
+          // 目录标记对象也要纳入操作，否则空目录或旧目录标记会残留。
+          result.add(object.name)
+        }
+        marker = page.isTruncated ? page.nextMarker : undefined
+        onScan?.(result.size)
+      } while (marker)
+      continue
+    }
+
+    // 复制时同时遍历 CommonPrefixes，补上没有独立目录标记、但仍由 OSS
+    // 目录前缀表示的子文件夹；这些 key 后续会创建目标目录标记。
+    const pendingPrefixes = [key]
+    const visitedPrefixes = new Set<string>()
+    while (pendingPrefixes.length) {
+      const prefix = pendingPrefixes.shift() as string
+      if (visitedPrefixes.has(prefix)) continue
+      visitedPrefixes.add(prefix)
+      let marker: string | undefined
+      do {
+        assertActive?.()
+        const page = await withRetry(() => client.list({ prefix, delimiter: '/', 'max-keys': 1000, ...(marker ? { marker } : {}) }))
+        for (const object of page.objects || []) result.add(object.name)
+        for (const childPrefix of page.prefixes || []) {
+          result.add(childPrefix)
+          pendingPrefixes.push(childPrefix)
+        }
+        marker = page.isTruncated ? page.nextMarker : undefined
+        onScan?.(result.size)
+      } while (marker)
+    }
   }
-  return result
+  return [...result]
 }
 
 async function objectExists(client: InstanceType<typeof OSS>, key: string): Promise<boolean> {
@@ -519,6 +545,11 @@ function objectPublicUrl(bucket: string, region: string, endpoint: string, key: 
 
 async function copyObjectVerified(client: InstanceType<typeof OSS>, source: string, target: string): Promise<void> {
   await withRetry(() => client.copy(target, source))
+  await withRetry(() => client.head(target))
+}
+
+async function createFolderMarkerVerified(client: InstanceType<typeof OSS>, target: string): Promise<void> {
+  await withRetry(() => client.put(target, Buffer.alloc(0)))
   await withRetry(() => client.head(target))
 }
 
@@ -1048,17 +1079,24 @@ function registerIpc(): void {
     if (!profile) throw new Error('OSS 配置不存在')
     const client = createClient(profile, request.bucket, undefined, request.region)
     const destPrefix = normalizeObjectPrefix(request.destinationPrefix)
-    event.sender.send('oss:op-progress', { done: 0, total: 0, current: '正在扫描对象…' })
+    const copyFoldersOnly = request.mode === 'copy' && request.folderCopyMode === 'folder'
+    event.sender.send('oss:op-progress', { done: 0, total: 0, current: copyFoldersOnly ? '正在扫描文件夹结构…' : '正在扫描对象…' })
 
-    // 先展开出全部待处理对象，避免处理过程中无法得知总量。
+    // 先展开出全部待处理对象，避免处理过程中无法得知总量；仅复制文件夹时再过滤掉文件 key。
     const pairs: ReturnType<typeof buildTransferPairs> = []
     for (const sourceKey of request.sourceKeys) {
-      const objects = sourceKey.endsWith('/')
+      const objectKeys = sourceKey.endsWith('/')
         ? await expandObjectKeys(client, [sourceKey], (scanned) => {
-          event.sender.send('oss:op-progress', { done: 0, total: 0, current: `正在扫描对象… 已发现 ${scanned} 个` })
-        }, () => assertObjectOperationActive(event.sender.id))
+          event.sender.send('oss:op-progress', { done: 0, total: 0, current: `${copyFoldersOnly ? '正在扫描文件夹结构…' : '正在扫描对象…'} 已发现 ${scanned} 个` })
+        }, () => assertObjectOperationActive(event.sender.id), request.mode === 'copy')
         : [sourceKey]
-      pairs.push(...buildTransferPairs(sourceKey, objects, destPrefix))
+      const transferKeys = copyFoldersOnly && sourceKey.endsWith('/')
+        ? collectFolderKeys(sourceKey, objectKeys)
+        : objectKeys
+      const folderNameOverride = request.mode === 'copy' && sourceKey.endsWith('/')
+        ? request.folderNameOverrides?.[sourceKey]
+        : undefined
+      pairs.push(...buildTransferPairs(sourceKey, transferKeys, destPrefix, folderNameOverride))
     }
 
     let count = 0
@@ -1068,12 +1106,16 @@ function registerIpc(): void {
     for (const pair of pairs) {
       assertObjectOperationActive(event.sender.id)
       try {
-        const targetExists = (request.conflictStrategy || 'skip') === 'skip' && await objectExists(client, pair.target)
+        const folderMarkerOnly = request.mode === 'copy' && pair.source.endsWith('/')
+        const targetExists = (request.conflictStrategy || 'skip') === 'skip' && (folderMarkerOnly
+          ? await prefixExists(client, pair.target)
+          : await objectExists(client, pair.target))
         assertObjectOperationActive(event.sender.id)
         if (targetExists) {
           skipped += 1
         } else {
-          await copyObjectVerified(client, pair.source, pair.target)
+          if (folderMarkerOnly) await createFolderMarkerVerified(client, pair.target)
+          else await copyObjectVerified(client, pair.source, pair.target)
           if (request.mode === 'move') await withRetry(() => client.delete(pair.source))
           count += 1
         }
