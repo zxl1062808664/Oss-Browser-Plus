@@ -43,6 +43,8 @@ export interface LocalUploadItem {
   relativePath: string
   name: string
   size: number
+  /** 空目录上传任务为 true；普通文件任务未设置或为 false。 */
+  isFolder?: boolean
 }
 
 export interface FolderTreeNode {
@@ -76,6 +78,8 @@ export interface UploadRequest {
   taskId: string
   absolutePath: string
   objectName: string
+  /** true 时上传零字节目录标记，而不是读取 absolutePath 进行文件上传。 */
+  isFolder?: boolean
   profileId: string
   bucket: string
   region?: string

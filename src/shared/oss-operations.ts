@@ -14,6 +14,17 @@ export function normalizeObjectPrefix(prefix: string): string {
   return prefix.trim().replace(/^\/+|\/+$/g, '')
 }
 
+/** 将 OSS 对象 key 转为相对于下载根目录的安全路径，返回值统一使用 / 分隔。 */
+export function buildDownloadRelativePath(basePrefixInput: string, objectKey: string): string {
+  const basePrefix = normalizeObjectPrefix(basePrefixInput)
+  const baseKey = basePrefix ? `${basePrefix}/` : ''
+  const normalizedKey = objectKey.replace(/^\/+|\/+$/g, '')
+  const relative = baseKey
+    ? objectKey.startsWith(baseKey) ? objectKey.slice(baseKey.length) : normalizedKey.split('/').pop() || ''
+    : objectKey
+  return relative.split('/').filter((part) => part && part !== '.' && part !== '..').join('/')
+}
+
 export function validateObjectEntryName(value: string, label = '名称'): string {
   const name = value.trim()
   if (!name) throw new Error(`${label}不能为空`)

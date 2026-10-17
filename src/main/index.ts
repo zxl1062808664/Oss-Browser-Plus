@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import OSS from 'ali-oss'
 import type { AppConfig, CreateFolderRequest, DeleteObjectsRequest, DownloadObjectsRequest, FolderScanProgress, FolderTreeNode, GetObjectUrlRequest, ListObjectsPageRequest, ListObjectsRequest, LocalUploadItem, ObjectPreview, PathCategory, PreviewObjectRequest, ProfileInput, RenameObjectRequest, SaveObjectRequest, SaveObjectResult, TransferObjectsRequest, UploadPreset, UploadRequest } from '../shared/types'
-import { assertSavableTextContent, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, collectFolderKeys, normalizeObjectPrefix } from '../shared/oss-operations'
+import { assertSavableTextContent, buildDownloadRelativePath, buildFolderKey, buildRenameDestination, buildRenameObjectTarget, buildTransferPairs, classifyObjectPreview, collectFolderKeys, normalizeObjectPrefix } from '../shared/oss-operations'
 
 interface StoredProfile extends Omit<ProfileInput, 'accessKeySecret' | 'hasSecret'> {
   encryptedSecret?: string
@@ -343,7 +343,23 @@ async function scanTree(current: string, relative = '', context?: FolderScanCont
   }
 }
 
-/** 递归收集单个选中节点（文件或文件夹）下的所有文件，relativePath 从该节点开始，保留层级结构 */
+function createFolderUploadItem(absolutePath: string, relativePath: string): LocalUploadItem | null {
+  if (!relativePath) return null
+  return {
+    id: randomUUID(),
+    absolutePath,
+    relativePath,
+    name: path.basename(relativePath),
+    size: 0,
+    isFolder: true
+  }
+}
+
+function hasUploadFile(items: LocalUploadItem[]): boolean {
+  return items.some((item) => !item.isFolder)
+}
+
+/** 递归收集单个选中节点（文件或文件夹）下的上传任务，保留空目录层级 */
 async function scanSelection(absolute: string, relative: string, excludeNames = new Set<string>()): Promise<LocalUploadItem[]> {
   let stat
   try {
@@ -352,7 +368,7 @@ async function scanSelection(absolute: string, relative: string, excludeNames = 
     return []
   }
   if (!stat.isDirectory()) {
-    return [{ id: randomUUID(), absolutePath: absolute, relativePath: relative, name: path.basename(absolute), size: stat.size }]
+    return [{ id: randomUUID(), absolutePath: absolute, relativePath: relative, name: path.basename(absolute), size: stat.size, isFolder: false }]
   }
   let entries
   try {
@@ -379,7 +395,10 @@ async function scanSelection(absolute: string, relative: string, excludeNames = 
       size: fileStat.size
     }]
   }))
-  return nested.flat()
+  const items = nested.flat()
+  if (hasUploadFile(items)) return items
+  const folder = createFolderUploadItem(absolute, relative)
+  return folder ? [folder, ...items] : items
 }
 
 /** 把用户勾选的若干节点展开为上传任务列表；若勾选节点存在祖先也被勾选，只取最顶层节点避免重复 */
@@ -533,7 +552,11 @@ async function scanUploadFolder(root: string, current = root, context?: FolderSc
     }]
   }))
   reportFolderScan(context, current, true)
-  return nested.flat()
+  const items = nested.flat()
+  const relative = path.join(path.basename(root), path.relative(root, current)).replaceAll('\\', '/')
+  if (hasUploadFile(items)) return items
+  const folder = createFolderUploadItem(current, relative)
+  return folder ? [folder, ...items] : items
 }
 
 /** 构造对象公开访问 URL（不签名、长期有效；仅当 Bucket 为公共读时可访问） */
@@ -919,28 +942,43 @@ function registerIpc(): void {
     const profile = config.profiles.find((item) => item.id === request.profileId)
     if (!profile) throw new Error('OSS 配置不存在')
     const client = createClient(profile, request.bucket, undefined, request.region)
-    const basePrefix = request.prefix ? `${request.prefix.replace(/^\/+|\/+$/g, '')}/` : ''
     const directory = result.filePaths[0]
     const keys = new Set(request.keys)
+    const folderPaths = new Set<string>()
+    const addFolderPath = (relativePath: string) => {
+      const parts = relativePath.split('/').filter(Boolean)
+      for (let index = 1; index <= parts.length; index += 1) folderPaths.add(parts.slice(0, index).join('/'))
+    }
 
     for (const folderKey of request.folderKeys) {
       const folderPrefix = `${folderKey.replace(/^\/+|\/+$/g, '')}/`
-      const folderWithoutSlash = folderPrefix.slice(0, -1)
-      const relativeFolder = folderWithoutSlash.startsWith(basePrefix)
-        ? folderWithoutSlash.slice(basePrefix.length)
-        : path.basename(folderWithoutSlash)
-      const safeFolder = relativeFolder.split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
-      await fs.mkdir(path.join(directory, safeFolder), { recursive: true })
+      const safeFolder = buildDownloadRelativePath(request.prefix, folderPrefix)
+      addFolderPath(safeFolder)
 
       let marker: string | undefined
       do {
         assertObjectOperationActive(event.sender.id)
         const page = await withRetry(() => client.list({ prefix: folderPrefix, 'max-keys': 1000, ...(marker ? { marker } : {}) }))
         for (const object of page.objects || []) {
-          if (object.name !== folderPrefix && !object.name.endsWith('/')) keys.add(object.name)
+          if (object.name.endsWith('/')) {
+            const nestedFolder = buildDownloadRelativePath(request.prefix, object.name)
+            addFolderPath(nestedFolder)
+          } else if (object.name !== folderPrefix) {
+            keys.add(object.name)
+          }
         }
         marker = page.isTruncated ? page.nextMarker : undefined
       } while (marker)
+    }
+
+    for (const key of keys) {
+      const parts = buildDownloadRelativePath(request.prefix, key).split('/').filter(Boolean)
+      parts.pop()
+      addFolderPath(parts.join('/'))
+    }
+
+    for (const folderPath of folderPaths) {
+      await fs.mkdir(path.join(directory, ...folderPath.split('/')), { recursive: true })
     }
 
     const keyList = Array.from(keys)
@@ -950,9 +988,8 @@ function registerIpc(): void {
     const failedKeys: string[] = []
     for (const key of keyList) {
       assertObjectOperationActive(event.sender.id)
-      const relative = (key.startsWith(basePrefix) ? key.slice(basePrefix.length) : path.basename(key))
-        .split('/').filter((part) => part && part !== '.' && part !== '..').join(path.sep)
-      const destination = path.join(directory, relative)
+      const relative = buildDownloadRelativePath(request.prefix, key)
+      const destination = path.join(directory, ...relative.split('/'))
       try {
         if (request.conflictStrategy === 'skip') {
           try {
@@ -986,7 +1023,7 @@ function registerIpc(): void {
       done += 1
       event.sender.send('oss:op-progress', { done, total: keyList.length, failed, skipped, current: key })
     }
-    return { directory, count: keyList.length - failed - skipped, failed, skipped, failedKeys, folderCount: request.folderKeys.length }
+    return { directory, count: keyList.length - failed - skipped, failed, skipped, failedKeys, folderCount: folderPaths.size }
   })
 
   ipcMain.handle('oss:delete-objects', async (event, request: DeleteObjectsRequest) => {
@@ -1157,28 +1194,36 @@ function registerIpc(): void {
     const client = createClient(profile, request.bucket, undefined, request.region)
     activeUploadClients.set(request.taskId, client)
     try {
+      const objectName = request.isFolder
+        ? `${request.objectName.replace(/\/+$/, '')}/`
+        : request.objectName
       if (request.conflictStrategy === 'skip') {
         try {
-          await client.head(request.objectName)
+          await client.head(objectName)
           return { skipped: true }
         } catch (error) {
           const status = (error as { status?: number }).status
           if (status !== 404) throw error
         }
       }
-      await client.multipartUpload(request.objectName, request.absolutePath, {
-        parallel: Math.max(1, Math.min(4, Math.floor(request.partConcurrency || 1))),
-        partSize: 1024 * 1024,
-        progress: async (percentage: number) => {
-          const stat = await fs.stat(request.absolutePath)
-          event.sender.send('oss:upload-progress', {
-            taskId: request.taskId,
-            percent: Math.round(percentage * 100),
-            loaded: Math.round(stat.size * percentage),
-            total: stat.size
-          })
-        }
-      })
+      if (request.isFolder) {
+        await withRetry(() => client.put(objectName, Buffer.alloc(0)))
+        event.sender.send('oss:upload-progress', { taskId: request.taskId, percent: 100, loaded: 0, total: 0 })
+      } else {
+        await client.multipartUpload(objectName, request.absolutePath, {
+          parallel: Math.max(1, Math.min(4, Math.floor(request.partConcurrency || 1))),
+          partSize: 1024 * 1024,
+          progress: async (percentage: number) => {
+            const stat = await fs.stat(request.absolutePath)
+            event.sender.send('oss:upload-progress', {
+              taskId: request.taskId,
+              percent: Math.round(percentage * 100),
+              loaded: Math.round(stat.size * percentage),
+              total: stat.size
+            })
+          }
+        })
+      }
       return {}
     } finally {
       activeUploadClients.delete(request.taskId)

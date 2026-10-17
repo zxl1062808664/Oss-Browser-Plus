@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertSavableTextContent,
+  buildDownloadRelativePath,
   buildFolderKey,
   buildRenameDestination,
   buildRenameObjectTarget,
@@ -19,6 +20,17 @@ describe('normalizeObjectPrefix', () => {
   it('normalizes root and nested prefixes', () => {
     expect(normalizeObjectPrefix('')).toBe('')
     expect(normalizeObjectPrefix(' /releases/windows// ')).toBe('releases/windows')
+  })
+})
+
+describe('buildDownloadRelativePath', () => {
+  it('keeps nested folder marker paths relative to the selected prefix', () => {
+    expect(buildDownloadRelativePath('apps/release', 'apps/release/empty/deep/')).toBe('empty/deep')
+    expect(buildDownloadRelativePath('', 'release/empty/')).toBe('release/empty')
+  })
+
+  it('filters dot segments from downloaded paths', () => {
+    expect(buildDownloadRelativePath('apps', 'apps/./release/../readme.txt')).toBe('release/readme.txt')
   })
 })
 

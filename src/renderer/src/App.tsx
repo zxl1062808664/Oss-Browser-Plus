@@ -26,6 +26,12 @@ const formatBytes = (bytes: number) => {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`
 }
+const uploadItemLabel = (item: Pick<LocalUploadItem, 'isFolder' | 'relativePath'>) => item.isFolder ? `${item.relativePath}/` : item.relativePath
+const describeUploadItems = (items: Array<Pick<LocalUploadItem, 'isFolder'>>): string => {
+  const fileCount = items.filter((item) => !item.isFolder).length
+  const folderCount = items.filter((item) => item.isFolder).length
+  return [fileCount ? `${fileCount} 个文件` : '', folderCount ? `${folderCount} 个空文件夹` : ''].filter(Boolean).join('、') || '0 项'
+}
   const normalizePrefix = (prefix: string) => prefix.replace(/^\/+|\/+$/g, '')
 const partConcurrencyFor = (taskConcurrency: number) => Math.max(1, Math.min(4, Math.floor(4 / Math.max(1, taskConcurrency))))
 const fullPath = (preset?: UploadPreset) => preset ? `oss://${preset.bucket}/${normalizePrefix(preset.prefix)}${preset.prefix ? '/' : ''}` : ''
@@ -88,7 +94,8 @@ function App() {
   const completed = tasks.filter((task) => ['success', 'skipped'].includes(task.status)).length
   const failed = tasks.filter((task) => task.status === 'failed').length
   const totalSize = tasks.reduce((sum, task) => sum + task.size, 0)
-  const totalProgress = totalSize ? Math.round(tasks.reduce((sum, task) => sum + task.size * task.progress / 100, 0) / totalSize * 100) : 0
+  const totalProgressWeight = tasks.reduce((sum, task) => sum + Math.max(task.size, 1), 0)
+  const totalProgress = totalProgressWeight ? Math.round(tasks.reduce((sum, task) => sum + Math.max(task.size, 1) * task.progress, 0) / totalProgressWeight) : 0
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -139,7 +146,7 @@ function App() {
   const addItems = (items: LocalUploadItem[]) => {
     if (!items.length) return
     setTasks((current) => [...current, ...items.map((item): UploadTask => ({ ...item, status: 'waiting', progress: 0 }))])
-    addLog('info', `已添加 ${items.length} 个文件到上传队列`)
+    addLog('info', `已添加 ${describeUploadItems(items)} 到上传队列`)
   }
 
   const addItemsFromPaths = async (paths: string[]) => {
@@ -194,7 +201,7 @@ function App() {
   const startUpload = async (onlyTaskId?: string) => {
     if (!selectedTargets.length) return notify('请至少选择一个上传目标')
     const hasPending = tasks.some((task) => (task.status === 'waiting' || task.status === 'failed') && (!onlyTaskId || task.id === onlyTaskId))
-    if (!hasPending) return notify('没有待上传文件')
+    if (!hasPending) return notify('没有待上传内容')
     if (subfolderPrefix) {
       setPendingUpload(onlyTaskId ? { onlyTaskId } : null)
       setConfirmUploadOpen(true)
@@ -205,7 +212,7 @@ function App() {
 
   const runUpload = async (onlyTaskId?: string) => {
     const pending = tasks.filter((task) => (task.status === 'waiting' || task.status === 'failed') && (!onlyTaskId || task.id === onlyTaskId))
-    if (!pending.length) return notify('没有待上传文件')
+    if (!pending.length) return notify('没有待上传内容')
     const operations = pending.flatMap((task): UploadTask[] => task.targetPresetId
       ? [task]
       : selectedTargets.map((target) => ({ ...task, id: uid(), targetPresetId: target.id, status: 'waiting', progress: 0, error: undefined, objectName: undefined })))
@@ -226,14 +233,16 @@ function App() {
           setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: '上传路径已不存在' } : item))
           continue
         }
-        const objectName = [normalizePrefix(target.prefix), subfolderPrefix, task.relativePath].filter(Boolean).join('/')
-        const displayPath = `${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath}`
+        const objectNameBase = [normalizePrefix(target.prefix), subfolderPrefix, task.relativePath].filter(Boolean).join('/')
+        const objectName = task.isFolder ? `${objectNameBase}/` : objectNameBase
+        const displayPath = `${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${uploadItemLabel(task)}`
         setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, error: undefined, objectName: displayPath } : item))
         try {
           const result = await window.desktopApi.upload({
             taskId: task.id,
             absolutePath: task.absolutePath,
             objectName,
+            isFolder: task.isFolder,
             profileId: target.profileId,
             bucket: target.bucket,
             conflictStrategy: config.conflictStrategy,
@@ -242,7 +251,7 @@ function App() {
           const status: TaskStatus = result.skipped ? 'skipped' : 'success'
           resultCounts[result.skipped ? 'skipped' : 'success'] += 1
           setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status, progress: 100 } : item))
-          addLog('success', `${result.skipped ? '已跳过' : '上传成功'}：${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath}`)
+          addLog('success', `${result.skipped ? '已跳过' : '上传成功'}：${displayPath}`)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (cancelRequested.current) {
@@ -250,7 +259,7 @@ function App() {
           } else {
             resultCounts.failed += 1
             setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: 'failed', error: message } : item))
-            addLog('error', `上传失败：${fullPath(target)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${task.relativePath} · ${message}`)
+            addLog('error', `上传失败：${displayPath} · ${message}`)
           }
         }
       }
@@ -258,7 +267,7 @@ function App() {
     await Promise.all(Array.from({ length: Math.min(config.concurrentUploads, operations.length) }, worker))
     const cancelled = operations.length - resultCounts.success - resultCounts.skipped - resultCounts.failed
     const duration = ((performance.now() - startedAt) / 1000).toFixed(1)
-    const summary = `本次上传结束：共 ${operations.length} 项，成功 ${resultCounts.success}，跳过 ${resultCounts.skipped}，失败 ${resultCounts.failed}，取消 ${cancelled}，耗时 ${duration} 秒`
+    const summary = `本次上传结束：${describeUploadItems(operations)}，成功 ${resultCounts.success}，跳过 ${resultCounts.skipped}，失败 ${resultCounts.failed}，取消 ${cancelled}，耗时 ${duration} 秒`
     addLog(resultCounts.failed ? 'error' : cancelled ? 'info' : 'success', summary)
     setBusy(false)
   }
@@ -472,9 +481,9 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       const items = await window.desktopApi.collectFromPaths(paths)
       if (items.length) {
         enqueueToCurrentDir(items)
-        setNotice(`已加入 ${items.length} 个文件到上传队列，点击「开始上传」按钮启动 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
+        setNotice(`已加入 ${describeUploadItems(items)} 到上传队列，点击「开始上传」按钮启动 → oss://${bucketName}/${currentPrefix ? `${currentPrefix}/` : ''}`)
       } else {
-        setNotice('拖入的内容中没有可上传的文件')
+        setNotice('拖入的内容中没有可上传内容')
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '读取拖入的文件失败')
@@ -603,7 +612,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       if ('cancelled' in result) {
         setNotice('已取消选择下载目录')
       } else {
-        const summary = `已下载 ${result.count} 个文件${result.skipped ? `，跳过 ${result.skipped} 个同名文件` : ''}${result.failed ? `，${result.failed} 个失败` : ''}${result.folderCount ? `（${result.folderCount} 个文件夹）` : ''}到 ${result.directory}`
+        const summary = `已下载 ${result.count} 个文件${result.folderCount ? `、${result.folderCount} 个文件夹` : ''}${result.skipped ? `，跳过 ${result.skipped} 个同名文件` : ''}${result.failed ? `，${result.failed} 个失败` : ''}到 ${result.directory}`
         const message = result.failed ? appendOssTroubleshootingHint(summary) : summary
         setNotice(message)
         onLog(result.failed ? 'error' : 'success', message)
@@ -894,13 +903,15 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
           setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'failed', error: '上传目标已失效，请重新添加文件' } : item))
           continue
         }
-        const objectName = [target.prefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
+        const objectNameBase = [target.prefix, task.relativePath.replace(/^\/+/, '')].filter(Boolean).join('/')
+        const objectName = task.isFolder ? `${objectNameBase}/` : objectNameBase
         setUploadQueue((queue) => queue.map((item) => item.id === task.id ? { ...item, status: 'uploading', progress: 0, objectName } : item))
         try {
           const result = await window.desktopApi.upload({
             taskId: task.id,
             absolutePath: task.absolutePath,
             objectName,
+            isFolder: task.isFolder,
             profileId: target.profileId,
             bucket: target.bucket,
             region: target.region,
@@ -1094,7 +1105,7 @@ function BrowsePage({ config, initialProfileId, initialPresetId, uploadQueue, se
       <div className="op-form">
         {!uploadQueue.length ? <div className="picker-empty">暂无上传任务</div> : <>
            <div className="browse-upload-list">{uploadQueue.map((task) => <div className="browse-upload-row" key={task.id}>
-             <span className="browse-upload-name" title={task.error || task.objectName || task.relativePath}>{task.relativePath}</span>
+             <span className="browse-upload-name" title={task.error || task.objectName || uploadItemLabel(task)}>{uploadItemLabel(task)}</span>
              <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>
               <span className={`upload-status ${task.status}`}>{task.status === 'uploading' ? `${task.progress}%` : task.status === 'success' ? '完成' : task.status === 'skipped' ? '已跳过' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : '等待'}</span>
              {task.status === 'failed' ? <button className="icon-button small retry" title={task.error ? `重试：${task.error}` : '重试此任务'} onClick={() => retryBrowseUpload(task.id)}><RefreshCw size={14} /></button> : <span />}
@@ -1218,7 +1229,7 @@ function UploadPage(props: UploadPageProps) {
       </section>
 
       <section className="summary-strip">
-        <div><ListChecks size={18} /><span><b>{tasks.length}</b> 个文件</span></div>
+        <div><ListChecks size={18} /><span><b>{tasks.filter((task) => !task.isFolder).length}</b> 个文件{tasks.some((task) => task.isFolder) && <> · <b>{tasks.filter((task) => task.isFolder).length}</b> 个文件夹</>}</span></div>
         <div><Gauge size={18} /><span><b>{formatBytes(props.totalSize)}</b> 总大小</span></div>
         <div className="summary-progress"><span>{props.completed} 已完成{props.failed ? ` · ${props.failed} 失败` : ''}</span><div className="progress-track"><i style={{ width: `${props.totalProgress}%` }} /></div><b>{props.totalProgress}%</b></div>
       </section>
@@ -1226,7 +1237,7 @@ function UploadPage(props: UploadPageProps) {
       <section className="task-section">
         <div className="section-heading"><div><h2>上传队列</h2><span>{tasks.filter((task) => task.status === 'waiting').length} 项等待</span></div><div className="queue-actions"><button className="secondary compact" disabled={!tasks.some((task) => task.status === 'waiting' || task.status === 'uploading')} onClick={props.onCancelAll}><CircleStop size={15} />取消所有任务</button><button className="secondary compact" disabled={!props.completed} onClick={props.onClear}><Trash2 size={15} />清空已完成</button><button className="secondary compact" disabled={!tasks.length || props.busy} onClick={props.onClearAll}><Trash2 size={15} />清空所有</button></div></div>
         <div className="task-table">
-          <div className="task-head"><span>文件</span><span>大小</span><span>进度</span><span>状态</span><span /></div>
+          <div className="task-head"><span>文件 / 文件夹</span><span>大小</span><span>进度</span><span>状态</span><span /></div>
           {!tasks.length ? <div className="queue-empty"><HardDriveUpload size={28} /><span>上传队列为空</span><small>选择文件或文件夹以添加任务</small></div> : tasks.map((task) => <TaskRow key={task.id} task={task} busy={props.busy} onRetry={() => props.onRetry(task.id)} onRemove={() => props.onRemove(task.id)} />)}
         </div>
       </section>
@@ -1240,8 +1251,8 @@ function UploadPage(props: UploadPageProps) {
 function TaskRow({ task, busy, onRetry, onRemove }: { task: UploadTask; busy: boolean; onRetry: () => void; onRemove: () => void }) {
   const labels: Record<TaskStatus, string> = { waiting: '等待中', uploading: '上传中', success: '已完成', failed: '失败', skipped: '已跳过', cancelled: '已取消' }
   return <div className="task-row">
-    <div className="file-cell"><span className="file-icon"><FileUp size={17} /></span><div><strong title={task.relativePath}>{task.relativePath}</strong><small title={task.objectName}>{task.objectName || '等待分配目标路径'}</small></div></div>
-    <span>{formatBytes(task.size)}</span>
+    <div className="file-cell"><span className="file-icon">{task.isFolder ? <FolderOpen size={17} /> : <FileUp size={17} />}</span><div><strong title={task.relativePath}>{uploadItemLabel(task)}</strong><small title={task.objectName}>{task.objectName || '等待分配目标路径'}</small></div></div>
+    <span>{task.isFolder ? '空文件夹' : formatBytes(task.size)}</span>
     <div className="row-progress"><div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div><span>{task.progress}%</span></div>
     <span className={`task-status ${task.status}`}>{task.status === 'uploading' && <LoaderCircle className="spin" size={14} />}{labels[task.status]}</span>
     <div className="task-actions">{task.status === 'failed' && <button className="icon-button small retry" title="重试此任务" disabled={busy} onClick={onRetry}><RefreshCw size={15} /></button>}<button className="icon-button small" title="移除任务" disabled={task.status === 'uploading'} onClick={onRemove}><X size={16} /></button></div>
@@ -1707,7 +1718,7 @@ function FolderPickerModal({ root, tree, preset, subfolder, scanning, scanProgre
   const clearAll = () => setChecked(new Set())
 
   const summary = useMemo(() => {
-    if (!tree) return { fileCount: 0, size: 0, folderNames: [] as string[] }
+    if (!tree) return { fileCount: 0, size: 0, folderCount: 0, folderNames: [] as string[] }
     // 只统计最顶层勾选节点（其祖先未被勾选；根节点 '' 视为包含整棵树），避免重复统计
     const sorted = [...checked].sort((a, b) => a.split('/').length - b.split('/').length)
     const topLevel: string[] = []
@@ -1727,19 +1738,25 @@ function FolderPickerModal({ root, tree, preset, subfolder, scanning, scanProgre
     }
     let fileCount = 0
     let size = 0
+    let folderCount = 0
     const folderNames: string[] = []
+    const countEmptyFolders = (node: FolderTreeNode): number => {
+      const current = node.isFolder && node.relativePath && node.fileCount === 0 ? 1 : 0
+      return current + node.children.reduce((sum, child) => sum + countEmptyFolders(child), 0)
+    }
     for (const relativePath of topLevel) {
       const node = findNode(tree, relativePath)
       if (!node) continue
       fileCount += node.fileCount
       size += node.size
+      folderCount += countEmptyFolders(node)
       if (node.relativePath) folderNames.push(node.relativePath)
     }
-    return { fileCount, size, folderNames }
+    return { fileCount, size, folderCount, folderNames }
   }, [checked, tree])
 
   const handleConfirm = async () => {
-    if (!tree || !summary.fileCount || submitting) return
+    if (!tree || (!summary.fileCount && !summary.folderCount) || submitting) return
     setSubmitting(true)
     try {
       await onConfirm([...checked])
@@ -1772,12 +1789,15 @@ function FolderPickerModal({ root, tree, preset, subfolder, scanning, scanProgre
           <FolderTreeBranch node={tree} depth={0} expanded={expanded} checked={checked} onToggleExpand={toggleExpand} onToggleCheck={toggleCheck} />
         </div>
         <div className="folder-picker-footer">
-          <span className="folder-selected">{summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '未勾选任何内容'}</span>
+          <span className="folder-selected">{[
+            summary.fileCount ? `已选 ${summary.fileCount} 个文件 · ${formatBytes(summary.size)}` : '',
+            summary.folderCount ? `${summary.folderCount} 个空文件夹` : ''
+          ].filter(Boolean).join(' · ') || '未勾选任何内容'}</span>
           <span className="folder-preview" title={preset ? `${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.join(' / ')}` : ''}>{preset ? (summary.folderNames.length
             ? `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}${summary.folderNames.slice(0, 3).join(' / ')}${summary.folderNames.length > 3 ? ` 等 ${summary.folderNames.length} 个目录` : ''}`
             : `OSS 目标：${fullPath(preset)}${subfolderPrefix ? `${subfolderPrefix}/` : ''}`) : '未选择上传路径'}</span>
           <button className="secondary" onClick={onClose}>取消</button>
-          <button className="primary" disabled={!summary.fileCount || submitting || scanning} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${summary.fileCount} 个文件`}</button>
+          <button className="primary" disabled={(!summary.fileCount && !summary.folderCount) || submitting || scanning} onClick={handleConfirm}>{submitting ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{submitting ? '正在添加...' : `添加 ${[summary.fileCount ? `${summary.fileCount} 个文件` : '', summary.folderCount ? `${summary.folderCount} 个空文件夹` : ''].filter(Boolean).join('、')}`}</button>
         </div>
       </>}
       {!tree && <div className="folder-picker-footer"><span /><span /><button className="secondary" onClick={onClose}>关闭</button><span /></div>}
